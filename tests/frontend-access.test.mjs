@@ -7,7 +7,7 @@ const source = readFileSync(new URL('../public/app.js',import.meta.url),'utf8').
 function screen(role) {
   const nodes = new Map();
   const context = createContext({
-    document:{querySelector:selector => {if (!nodes.has(selector)) nodes.set(selector,{innerHTML:'',addEventListener(){}});return nodes.get(selector);},addEventListener(){}},
+    document:{querySelector:selector => {if (!nodes.has(selector)) nodes.set(selector,{innerHTML:'',addEventListener(){},querySelectorAll(){return [];}});return nodes.get(selector);},addEventListener(){}},
     window:{addEventListener(){}},location:{hash:'#schedules'},Intl,URL,Set,
   });
   runInContext(source,context);

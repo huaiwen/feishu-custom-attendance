@@ -9,7 +9,7 @@ const start = app.indexOf('let feishuSdkReady;');
 const end = app.indexOf('async function checkin(', start);
 assert.ok(start >= 0 && end > start, 'test the actual SDK preparation and location functions');
 
-function sdkHarness() {
+function sdkHarness(userAgent = 'Feishu mobile') {
   const callbacks = {};
   const timers = new Map();
   let timerId = 0;
@@ -17,7 +17,7 @@ function sdkHarness() {
   let configCalls = 0;
   const context = createContext({
     ui: { db: { mode: 'feishu' } },
-    navigator: { userAgent: 'Feishu mobile' },
+    navigator: { userAgent, geolocation: { getCurrentPosition() { assert.fail('Production must use Feishu location, never browser GPS'); } } },
     location: { href: 'https://attendance.example.com/#checkin' },
     api: async () => ({ appId: 'cli_test', signature: 'test-signature' }),
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
@@ -118,4 +118,12 @@ test('Feishu authentication timeout rejects after SDK ready and permits retry', 
   await retry;
   assert.equal(sdk.configCalls(), 2);
   assert.equal(sdk.locationCalls(), 1);
+});
+
+
+test('Production location rejects an ordinary browser without using browser GPS', async () => {
+  const sdk = sdkHarness('Mozilla/5.0 iPhone Safari');
+  await assert.rejects(sdk.getPosition(), /手机飞书工作台/);
+  assert.equal(sdk.locationCalls(), 0);
+  assert.equal(sdk.configCalls(), 0);
 });

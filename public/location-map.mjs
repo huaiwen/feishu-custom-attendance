@@ -32,8 +32,7 @@ export function mountLocationMap(form, getPosition) {
   const centerButton = form.querySelector('#select-map-center');
   const retryButton = form.querySelector('#map-retry');
   const coordinateSystem = field('coordinateSystem');
-  let previousSystem = coordinateSystem.value;
-  let active = true, map, circle, marker, places, readinessTimer, searchRequest = 0;
+  let active = true, map, circle, marker, places, readinessTimer, searchRequest = 0, interaction = 0;
   const isOpen = () => active && form.isConnected && form.closest('dialog')?.open;
   const point = () => {
     if (!field('latitude').value || !field('longitude').value) return null;
@@ -59,6 +58,7 @@ export function mountLocationMap(form, getPosition) {
     status.textContent = `已选定考勤中心 · 半径 ${radius} 米。可继续点击地图微调，确认后保存地点。`;
   };
   const select = lnglat => {
+    interaction++;
     const [lng, lat] = gcoord.transform([lnglat.getLng(), lnglat.getLat()], gcoord.GCJ02, crs(coordinateSystem.value));
     field('latitude').value = lat.toFixed(7);field('longitude').value = lng.toFixed(7);
     update();
@@ -66,6 +66,7 @@ export function mountLocationMap(form, getPosition) {
   const searchPlaces = () => {
     const keyword = search.value.trim();
     if (!keyword || !places) { status.textContent = '请输入园区、楼栋名称或地址。';search.focus();return; }
+    interaction++;
     const request = ++searchRequest;
     searchButton.disabled = true;results.replaceChildren();status.textContent = '正在搜索高德地图…';
     places.search(keyword, (code, data) => {
@@ -82,8 +83,8 @@ export function mountLocationMap(form, getPosition) {
         button.append(name, address);
         button.onclick = () => {
           select(place.location);map.setZoomAndCenter(17, [place.location.getLng(), place.location.getLat()]);
-          if (!field('name').value.trim()) field('name').value = place.name.slice(0, 60);
-          if (!field('address').value.trim()) field('address').value = address.textContent.slice(0, 200);
+          field('name').value = place.name.slice(0, 60);
+          field('address').value = address.textContent.slice(0, 200);
           results.replaceChildren();
         };
         results.append(button);
@@ -95,29 +96,23 @@ export function mountLocationMap(form, getPosition) {
   const searchKey = event => { if (event.key === 'Enter') { event.preventDefault();searchPlaces(); } };
   search.addEventListener('keydown', searchKey);
   centerButton.onclick = () => { if (map) select(map.getCenter()); };
-  locateButton.onclick = async () => {
-    locateButton.disabled = true;status.textContent = '正在获取当前位置…';
+  const locate = async () => {
+    const before = interaction;
+    locateButton.disabled = true;status.textContent = '正在通过飞书获取附近位置…';
     try {
       const position = await getPosition();
-      if (!isOpen() || !map) return;
+      if (!isOpen() || !map || interaction !== before) return;
       const center = gcoord.transform([position.longitude, position.latitude], crs(position.coordinateSystem), gcoord.GCJ02);
       map.setZoomAndCenter(17, center);
-      status.textContent = `已移动到附近，定位误差约 ${Math.round(position.accuracy)} 米。请点击地图选择考勤中心。`;
-    } catch (error) { if (isOpen()) status.textContent = error.message; }
+      status.textContent = `已移到你附近。搜索园区或楼栋，选择结果后确认打卡范围。`;
+    } catch (error) { if (isOpen() && interaction === before) status.textContent = `${error.message}。也可以直接搜索地点。`; }
     finally { if (active) locateButton.disabled = false; }
   };
+  locateButton.onclick = locate;
   const change = event => {
-    if (event.target === coordinateSystem) {
-      if (field('latitude').value && field('longitude').value) {
-        const [lng, lat] = gcoord.transform([Number(field('longitude').value), Number(field('latitude').value)], crs(previousSystem), crs(coordinateSystem.value));
-        field('latitude').value = lat.toFixed(7);field('longitude').value = lng.toFixed(7);
-      }
-      previousSystem = coordinateSystem.value;
-    }
-    if (['latitude', 'longitude', 'coordinateSystem', 'radius'].includes(event.target.name)) {
+    if (event.target.name === 'radius') {
       update();
-      if (map && point()) map.setCenter(point());
-      if (event.target.name === 'radius' && circle) map.setFitView([circle], true, [30, 30, 30, 30], 18);
+      if (map && circle) map.setFitView([circle], true, [30, 30, 30, 30], 18);
     }
   };
   const start = async () => {
@@ -131,10 +126,12 @@ export function mountLocationMap(form, getPosition) {
       map.addControl(new AMap.ToolBar());map.addControl(new AMap.Scale());
       places = new AMap.PlaceSearch({ pageSize: 5, extensions: 'base', citylimit: false });
       map.on('click', event => select(event.lnglat));
+      map.on('dragstart', () => { interaction++; });
       map.on('complete', () => { clearTimeout(readinessTimer);if (!isOpen()) return;retryButton.hidden = true;update(); });
       readinessTimer = setTimeout(() => { if (isOpen()) { status.textContent = '高德底图尚未加载完成，请检查网络或点击重新加载。';retryButton.hidden = false; } }, 20_000);
       for (const control of [searchButton, locateButton, centerButton]) control.disabled = false;
       update();
+      if (!point()) locate();
     } catch (error) { if (isOpen()) { status.textContent = error instanceof TypeError ? '高德地图组件加载失败，请重新加载或联系管理员。' : error.message;retryButton.hidden = false; } }
   };
   retryButton.onclick = start;

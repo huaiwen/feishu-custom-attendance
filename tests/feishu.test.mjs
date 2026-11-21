@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { exchangeCode, getJsapiConfig } from '../feishu.mjs';
+import { exchangeCode, getJsapiConfig, sendReminderMessage } from '../feishu.mjs';
 
 const response = data => ({ ok: true, json: async () => data });
 
@@ -119,4 +119,17 @@ test('Directory rejects repeated page tokens instead of returning an incomplete 
   const { getDirectory } = await import('../feishu.mjs');
   const fetch = async input => response(input.includes('/tenant_access_token/') ? {code:0,tenant_access_token:'token',expire:7200} : {code:0,data:{has_more:true,page_token:'same'}});
   await assert.rejects(getDirectory({appId:'cli_bad_pages',appSecret:'secret',fetch}),/分页异常/);
+});
+
+test('Reminder messages use this application identity, direct open_id recipients and stable deduplication UUIDs', async () => {
+  const calls=[];
+  const fetch=async(url,options)=>{calls.push({url,options});return response(url.includes('/tenant_access_token/')?{code:0,tenant_access_token:'private-bot-token',expire:7200}:{code:0,data:{message_id:'om_result'}});};
+  const input={appId:'cli_reminder',appSecret:'secret',openId:'ou_a',text:'打卡提醒\nhttps://attendance.example.com/#checkin',uuid:'reminder-123',fetch};
+  assert.equal(await sendReminderMessage(input),'om_result');
+  assert.equal(calls[1].url,'https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id');
+  assert.deepEqual(JSON.parse(calls[1].options.body),{receive_id:'ou_a',msg_type:'text',content:JSON.stringify({text:input.text}),uuid:input.uuid});
+  assert.equal(calls[1].options.headers.Authorization,'Bearer private-bot-token');
+  assert.equal(await sendReminderMessage({...input,isCurrent:()=>false}),null);
+  assert.equal(calls.length,2,'revocation is checked after credential acquisition, before sending');
+  await assert.rejects(sendReminderMessage({...input,openId:'email@example.com'}),/格式/);
 });

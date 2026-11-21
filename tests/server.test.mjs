@@ -212,8 +212,8 @@ test('OAuth sessions enforce employee isolation, administrator access and logout
     }
     assert.fail(`Unexpected external request: ${url}`);
   });
-  async function login(code) {
-    const response = await app.request('/auth/login', { headers });
+  async function login(code, target = '') {
+    const response = await app.request('/auth/login' + target, { headers });
     assert.equal(response.status, 302);
     const nonce = new URL(response.headers.get('location')).searchParams.get('state');
     const oauthCookie = response.headers.get('set-cookie').split(';')[0];
@@ -221,12 +221,12 @@ test('OAuth sessions enforce employee isolation, administrator access and logout
     const callback = `/auth/callback?state=${nonce}&code=${code}`;
     const authorized = await app.request(callback, { headers: { ...headers, Cookie: oauthCookie } });
     assert.equal(authorized.status, 302);
-    assert.equal(authorized.headers.get('location'), '/');
+    assert.equal(authorized.headers.get('location'), target ? '/?recordDate=2026-11-23&group=default-group#records' : '/');
     assert.match(authorized.headers.get('set-cookie'), /attendance_session=[0-9a-f]{64};.*HttpOnly;.*Secure/);
     assert.equal((await app.request(callback, { headers: { ...headers, Cookie: oauthCookie } })).status, 403);
     return { ...headers, Cookie: authorized.headers.get('set-cookie').split(';')[0] };
   }
-  const workerHeaders = await login('worker');
+  const workerHeaders = await login('worker','?view=records&recordDate=2026-11-23&group=default-group&redirect=https://evil.example');
   const visible = await (await app.request('/api/state', { headers: workerHeaders })).json();
   assert.deepEqual(visible.session, { role: 'user', employeeId: 'worker', managedGroupIds: [] });
   assert.deepEqual(visible.employees.map(e => e.id), ['worker']);
@@ -300,6 +300,19 @@ test('Three roles enforce group boundaries, verified directory imports and immed
     return {...headers,Cookie:response.headers.get('set-cookie').split(';')[0]};
   };
   const org = await login('admin'), manager = await login('manager'), worker = await login('worker');
+  const personal = {checkinEnabled:true,beforeMinutes:30};
+  assert.equal((await app.request('/api/reminders',{headers})).status,401);
+  assert.equal((await app.request('/api/reminders',{headers:worker,method:'PUT',data:personal})).status,200);
+  assert.equal((await (await app.request('/api/reminders',{headers:worker})).json()).preferences.beforeMinutes,30);
+  assert.equal((await (await app.request('/api/reminders',{headers:manager})).json()).preferences.beforeMinutes,15);
+  assert.equal((await app.request('/api/reminders',{headers:worker,method:'PUT',data:{...personal,afterMinutes:60}})).status,403);
+  assert.equal((await app.request('/api/reminders',{headers:manager,method:'PUT',data:{...personal,reviewEnabled:true,afterMinutes:90}})).status,200);
+  assert.equal((await app.request('/api/reminders/test',{headers:worker,method:'POST',data:{}})).status,503);
+  const privateData = JSON.parse(await readFile(file,'utf8'));
+  assert.equal(privateData.reminders.preferences.ou_worker.beforeMinutes,30);
+  assert.equal(privateData.reminders.preferences.ou_manager.afterMinutes,90);
+  for (const actor of [worker,manager,org]) assert.equal('reminders' in await (await app.request('/api/state',{headers:actor})).json(),false);
+
   for (const [actor,allowed] of [[org,true],[manager,false],[worker,false],[headers,false]]) {
     const page=await app.request('/',{headers:actor});
     assert.equal(page.headers.get('content-security-policy').includes("'unsafe-eval'"),allowed,'AMap plugin compatibility is limited to authenticated organization admins');
@@ -392,4 +405,10 @@ test('AMap keeps its security code private and only proxies authenticated, bound
   const {app:production} = await fixture(t,{...env,FEISHU_APP_ID:'cli_amap',FEISHU_APP_SECRET:'test-secret',ADMIN_OPEN_IDS:'ou_admin',BASE_URL:'https://attendance.example.com'});
   const headers = {Host:'attendance.example.com'};
   for (const path of ['/api/maps/config','/_AMapService/v3/place/text']) assert.equal((await production.request(path,{headers})).status,401);
+});
+
+test('Reminder configuration is explicit and requires Feishu authentication', () => {
+  assert.equal(configuration({PORT:'0'}).remindersEnabled,false);
+  assert.throws(() => configuration({REMINDERS_ENABLED:'yes'}),/true 或 false/);
+  assert.throws(() => configuration({REMINDERS_ENABLED:'true'}),/飞书应用/);
 });

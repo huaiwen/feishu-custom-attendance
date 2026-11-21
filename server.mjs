@@ -4,9 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DomainError, validateEmployee, validateLocation, validateScheduleBatch, evaluatePunch, clockParts } from './domain.mjs';
-import { exchangeCode, getJsapiConfig, getDirectory } from './feishu.mjs';
+import { exchangeCode, getJsapiConfig, getDirectory, sendReminderMessage } from './feishu.mjs';
 import { validateShiftTemplate, attendanceSummary } from './schedule-tools.mjs';
 import { sessionFor, managesGroup, requireGroup, visibleState, validateGroup, migrateGroups } from './access.mjs';
+
+import { initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, createReminderDispatcher } from './reminders.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const ZONE = 'Asia/Shanghai';
@@ -31,7 +33,9 @@ export function configuration(env = process.env) {
   const amapKey = env.AMAP_JS_KEY?.trim() || '', amapSecurityCode = env.AMAP_SECURITY_JS_CODE?.trim() || '';
   if (Boolean(amapKey) !== Boolean(amapSecurityCode)) throw new Error('高德地图需要同时配置 AMAP_JS_KEY 和 AMAP_SECURITY_JS_CODE');
   if ([amapKey, amapSecurityCode].some(value => value && !/^[a-zA-Z0-9_-]{16,128}$/.test(value))) throw new Error('高德地图配置格式不正确');
-  return { mode: enabled ? 'feishu' : 'demo', host: enabled ? (env.HOST || '127.0.0.1') : '127.0.0.1', port, baseUrl,
+  if (env.REMINDERS_ENABLED && !['true', 'false'].includes(env.REMINDERS_ENABLED)) throw new Error('REMINDERS_ENABLED 必须为 true 或 false');
+  if (env.REMINDERS_ENABLED === 'true' && !enabled) throw new Error('飞书提醒需要先配置飞书应用');
+  return { remindersEnabled: env.REMINDERS_ENABLED === 'true', mode: enabled ? 'feishu' : 'demo', host: enabled ? (env.HOST || '127.0.0.1') : '127.0.0.1', port, baseUrl,
     appId: env.FEISHU_APP_ID, appSecret: env.FEISHU_APP_SECRET, adminOpenIds, tenantKey: env.FEISHU_TENANT_KEY, amapKey, amapSecurityCode };
 }
 
@@ -78,11 +82,13 @@ function readState(file, mode) {
     state.shiftTemplates ??= [];
     const previousVersion = state.version;
     migrateGroups(state);
+    initializeReminders(state);
     if (previousVersion !== state.version) persist(file, state);
     return state;
   } catch (error) {
     if (error.code !== 'ENOENT') throw new Error(`读取考勤数据失败，原文件已保留：${error.message}`);
     const state = migrateGroups(initialState(mode));
+    initializeReminders(state);
     persist(file, state);
     return state;
   }
@@ -127,6 +133,8 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
     state = next;
     return result;
   };
+  const reminders = createReminderDispatcher({ getState: () => state, commit, config,
+    send: options => sendReminderMessage({ appId: config.appId, appSecret: config.appSecret, ...options }) });
   const server = http.createServer(async (req, res) => {
     const json = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); };
     const redirect = url => { res.writeHead(302, { Location: url }); res.end(); };
@@ -159,7 +167,13 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         if (config.mode === 'demo') return redirect('/');
         if (oauthStates.size >= 1000) throw new DomainError('登录请求过多，请稍后重试', 429);
         const nonce = randomBytes(32).toString('hex');
-        oauthStates.set(nonce, { expires: now + 300000, returnTo: url.searchParams.get('view') === 'checkin' ? '/#checkin' : '/' });
+        const view = url.searchParams.get('view');
+        const returnParams = new URLSearchParams();
+        for (const [key, pattern] of [['recordDate', /^\d{4}-\d{2}-\d{2}$/], ['group', /^[a-zA-Z0-9-]{1,100}$/]]) {
+          const value = url.searchParams.get(key);if (value && pattern.test(value)) returnParams.set(key, value);
+        }
+        const returnTo = view === 'records' ? `/${returnParams.size ? `?${returnParams}` : ''}#records` : view === 'checkin' ? '/#checkin' : '/';
+        oauthStates.set(nonce, { expires: now + 300000, returnTo });
         setCookie('attendance_oauth', nonce, 300);
         const authorize = new URL('https://accounts.feishu.cn/open-apis/authen/v1/authorize');
         authorize.search = new URLSearchParams({ client_id: config.appId, response_type: 'code', redirect_uri: `${config.baseUrl}/auth/callback`, state: nonce });
@@ -191,6 +205,21 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       if (url.pathname === '/api/state' && req.method === 'GET') {
         requireAuth();
         return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session, integration: { configured: config.mode === 'feishu', appId: config.appId || null, mapConfigured: Boolean(config.amapKey && config.amapSecurityCode) } });
+      }
+      if (url.pathname === '/api/reminders' && ['GET', 'PUT'].includes(req.method)) {
+        requireAuth();
+        const openId = auth.openId || 'demo';
+        if (req.method === 'PUT') {
+          const body = await readBody(req);
+          const preferences = validateReminderPreferences(body, currentSession().role);
+          commit(next => { initializeReminders(next).preferences[openId] = { ...next.reminders.preferences[openId], ...preferences }; });
+        }
+        return json(200, { enabled: config.remindersEnabled, preferences: reminderPreferences(state, openId, currentSession().role), history: reminderHistory(state, openId) });
+      }
+      if (url.pathname === '/api/reminders/test' && req.method === 'POST') {
+        requireAuth();
+        const result = await reminders.test(auth.openId);
+        return json(result.status === 'sent' ? 200 : 502, result);
       }
       if (url.pathname === '/api/maps/config' && req.method === 'GET') {
         requireAdmin();
@@ -420,6 +449,14 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       json(status, { error: status === 500 ? '服务暂时不可用，请稍后重试；数据未更新' : error.message });
     }
   });
+  let reminderTimer;
+  server.on('listening', () => {
+    if (!config.remindersEnabled) return;
+    const tick = () => reminders.run().catch(() => console.error('提醒处理失败，请检查数据文件与磁盘状态'));
+    reminderTimer = setInterval(tick, 30_000);
+    reminderTimer.unref();tick();
+  });
+  server.on('close', () => clearInterval(reminderTimer));
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
   return { server, config };

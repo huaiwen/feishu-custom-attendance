@@ -23,7 +23,8 @@ export function visibleState(state, session, adminOpenIds) {
   const schedules = state.schedules.filter(canRead);
   const locationIds = new Set(schedules.flatMap(s => s.segments.map(p => p.locationId)));
   const own = state.employees.find(e => e.id === session.employeeId);
-  return { ...state,
+  const { reminders, ...attendance } = state;
+  return { ...attendance,
     groups: state.groups.filter(g => org || session.managedGroupIds.includes(g.id) || g.id === own?.groupId)
       .map(g => manager ? g : { id: g.id, name: g.name }),
     employees: state.employees.filter(e => org || e.id === session.employeeId || managesGroup(session, e.groupId)).map(e => {

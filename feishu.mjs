@@ -94,19 +94,25 @@ export async function getJsapiConfig({ appId, appSecret, url, fetch = globalThis
   return { appId, timestamp, nonceStr, signature, jsApiList: ['getLocation', 'requestAccess'] };
 }
 
-async function directoryClient({ appId, appSecret, fetch = globalThis.fetch }) {
+async function tenantToken({ appId, appSecret, fetch = globalThis.fetch }) {
   checkCredentials(appId, appSecret);
-  const key = `directory:${appId}:${createHash('sha256').update(appSecret).digest('hex')}`;
+  const key = `tenant:${appId}:${createHash('sha256').update(appSecret).digest('hex')}`;
   let token = credentialsCache.get(key);
   if (!token || token.expiresAt <= Date.now()) {
     const obtainedAt = Date.now();
-    const data = await request(fetch, `${openApi}/auth/v3/tenant_access_token/internal`, json({ app_id: appId, app_secret: appSecret }), '获取组织读取凭证');
+    const data = await request(fetch, `${openApi}/auth/v3/tenant_access_token/internal`, json({ app_id: appId, app_secret: appSecret }), '获取飞书应用凭证');
     token = cachedCredential(data.tenant_access_token, data.expire, obtainedAt);
     credentialsCache.set(key, token);
   }
+  return token.value;
+}
+
+async function directoryClient(options) {
+  const token = await tenantToken(options);
+  const fetch = options.fetch || globalThis.fetch;
   return async (path, params = []) => {
     const query = new URLSearchParams([['user_id_type', 'open_id'], ['department_id_type', 'open_department_id'], ...params]);
-    const data = await request(fetch, `${openApi}/contact/v3/${path}?${query}`, { headers: { Authorization: `Bearer ${token.value}` } }, '读取组织通讯录');
+    const data = await request(fetch, `${openApi}/contact/v3/${path}?${query}`, { headers: { Authorization: `Bearer ${token}` } }, '读取组织通讯录');
     if (!data.data || typeof data.data !== 'object') throw new Error('组织通讯录响应不完整');
     return data.data;
   };
@@ -174,4 +180,15 @@ export async function getDirectory(options) {
   return { departments: [...departments].map(([id, name]) => ({ id, name })),
     users: [...users.values()].map(user => ({ ...user, department: user.departmentIds.map(id => departments.get(id)).filter(Boolean).join(' / ') })),
     notice: groupScopes ? '当前显示按部门和成员授权的人员；若缺少成员，请组织管理员将对应部门加入应用通讯录范围。' : '' };
+}
+
+export async function sendReminderMessage({ appId, appSecret, openId, text, uuid, isCurrent = () => true, fetch = globalThis.fetch }) {
+  if (!/^ou_[a-zA-Z0-9]+$/.test(openId) || typeof text !== 'string' || !text || text.length > 4000 || !/^[a-zA-Z0-9-]{1,50}$/.test(uuid)) throw new Error('提醒消息格式不正确');
+  const token = await tenantToken({ appId, appSecret, fetch });
+  if (!isCurrent()) return null;
+  const options = json({ receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }), uuid });
+  options.headers.Authorization = `Bearer ${token}`;
+  const data = await request(fetch, `${openApi}/im/v1/messages?receive_id_type=open_id`, options, '发送飞书提醒');
+  if (typeof data.data?.message_id !== 'string' || !data.data.message_id) throw new Error('飞书未返回提醒发送结果');
+  return data.data.message_id;
 }

@@ -1,7 +1,7 @@
-# Vendored map assets
+# Vendored coordinate conversion
 
-Leaflet 1.9.4 (BSD-2-Clause) and gcoord 1.0.8 (MIT), downloaded from the official npm registry. Package SHA-512 integrity verified before extraction. No install scripts were run. Keep the accompanying licenses.
+gcoord 1.0.8 (MIT), downloaded from the official npm registry with package SHA-512 integrity verified. No install scripts were run. Keep GCOORD-LICENSE.
 
-Sources: https://github.com/Leaflet/Leaflet and https://github.com/hujiulong/gcoord .
+Source: https://github.com/hujiulong/gcoord .
 
-Leaflet provides the interactive map; gcoord normalizes WGS84/GCJ-02 coordinates. Map imagery is requested directly from https://tile.openstreetmap.org only when the administrator opens the location editor.
+The application uses the official AMap JavaScript API 2.0 for interactive maps and location search. Only the coordinate conversion library is vendored. AMap's security code remains on the server; see ../../docs/amap.md.

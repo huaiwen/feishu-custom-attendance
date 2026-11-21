@@ -278,7 +278,7 @@ test('Three roles enforce group boundaries, verified directory imports and immed
     schedules:['worker','other'].map(id => ({id:`s-${id}`,employeeId:id,groupId:id === 'worker' ? 'g1' : 'g2',date,segments:[{start:'09:00',end:'18:00',locationId:'office'}]})),
     records:['worker','other'].map(id => ({id:`r-${id}`,employeeId:id,employeeName:id,groupId:id === 'worker' ? 'g1' : 'g2',scheduleId:`s-${id}`,date,segmentIndex:0,kind:'in',timestamp:'2040-01-05T01:00:00Z',status:'normal',source:'feishu'}))};
   await writeFile(file,JSON.stringify(stored));
-  const env = {PORT:'0',FEISHU_APP_ID:'cli_roles',FEISHU_APP_SECRET:'test-secret',BASE_URL:'https://attendance.example.com',ADMIN_OPEN_IDS:'ou_admin',FEISHU_TENANT_KEY:'tenant-test'};
+  const env = {PORT:'0',FEISHU_APP_ID:'cli_roles',FEISHU_APP_SECRET:'test-secret',BASE_URL:'https://attendance.example.com',ADMIN_OPEN_IDS:'ou_admin',FEISHU_TENANT_KEY:'tenant-test',AMAP_JS_KEY:'test-key-1234567890',AMAP_SECURITY_JS_CODE:'test-security-1234567890'};
   const app = await start(file,env);
   t.after(async () => {await app.close();await rm(directory,{recursive:true,force:true});});
   const headers = {Host:'attendance.example.com',Origin:env.BASE_URL};
@@ -300,6 +300,11 @@ test('Three roles enforce group boundaries, verified directory imports and immed
     return {...headers,Cookie:response.headers.get('set-cookie').split(';')[0]};
   };
   const org = await login('admin'), manager = await login('manager'), worker = await login('worker');
+  for (const [actor,allowed] of [[org,true],[manager,false],[worker,false],[headers,false]]) {
+    const page=await app.request('/',{headers:actor});
+    assert.equal(page.headers.get('content-security-policy').includes("'unsafe-eval'"),allowed,'AMap plugin compatibility is limited to authenticated organization admins');
+    assert.equal(page.headers.get('content-security-policy').includes('https://jsapi-service.amap.com'),allowed);
+  }
   const stateAs = async who => (await app.request('/api/state',{headers:who})).json();
   const call = (who,path,data,method='POST') => app.request(path,{headers:who,data,method});
   const visible = await stateAs(manager);
@@ -318,6 +323,7 @@ test('Three roles enforce group boundaries, verified directory imports and immed
   assert.equal((await call(manager,'/api/schedules/s-other',{},'DELETE')).status,403);
   assert.equal((await call(manager,'/api/schedules',{...schedule,employeeIds:['worker']})).status,200);
   assert.equal((await app.request('/api/directory',{headers:worker})).status,403);
+  for (const actor of [worker,manager]) for (const path of ['/api/maps/config','/_AMapService/v3/place/text']) assert.equal((await app.request(path,{headers:actor})).status,403);
   const listed = await (await app.request('/api/directory',{headers:manager})).json();
   assert.equal(listed.users[0].name,'来自组织的成员');
   assert.doesNotMatch(JSON.stringify(listed),/private-|directory-token/);
@@ -343,4 +349,47 @@ test('Three roles enforce group boundaries, verified directory imports and immed
   assert.equal((await app.request('/api/records.csv',{headers:manager})).status,403);
   assert.equal((await call(manager,'/api/schedules',{...schedule,employeeIds:['worker']})).status,403);
   assert.equal((await call(org,'/api/employees',{...employee,openId:'ou_forged'})).status,403,'production bindings must come from the organization');
+});
+
+
+test('AMap keeps its security code private and only proxies authenticated, bounded allowlisted requests', async t => {
+  assert.throws(() => configuration({AMAP_JS_KEY:'test-key-1234567890'}),/同时配置/);
+  assert.throws(() => configuration({AMAP_JS_KEY:'bad key',AMAP_SECURITY_JS_CODE:'test-security-1234567890'}),/格式/);
+  const env = {PORT:'0',AMAP_JS_KEY:'test-key-1234567890',AMAP_SECURITY_JS_CODE:'test-security-1234567890'};
+  const {app} = await fixture(t,env);
+  assert.match((await app.request('/')).headers.get('content-security-policy'),/'unsafe-eval'/);
+  const config = await (await app.request('/api/maps/config')).json();
+  assert.deepEqual(config,{key:env.AMAP_JS_KEY});
+  const state = await app.state();
+  assert.equal(state.integration.mapConfigured,true);
+  assert.doesNotMatch(JSON.stringify(state),/test-security|test-key/);
+  let calls = 0;
+  t.mock.method(globalThis,'fetch',async (input,options) => {
+    calls++;
+    const url = new URL(input);
+    assert.equal(url.origin,'https://restapi.amap.com');
+    assert.equal(url.pathname,'/v3/place/text');
+    assert.equal(url.searchParams.get('key'),env.AMAP_JS_KEY);
+    assert.equal(url.searchParams.get('jscode'),env.AMAP_SECURITY_JS_CODE);
+    assert.equal(options.redirect,'error');
+    assert.deepEqual(options.headers,{Referer:app.url+'/'},'send only the verified application origin, never browser credentials');
+    return new Response(`callback_1({"status":"1","debug":"${env.AMAP_SECURITY_JS_CODE}"})`);
+  });
+  const response = await app.request('/_AMapService/v3/place/text?keywords=office&callback=callback_1&key=attacker&jscode=attacker');
+  assert.equal(response.status,200);
+  assert.match(response.headers.get('content-type'),/javascript/);
+  assert.equal(await response.text(),'callback_1({"status":"1","debug":"[redacted]"})');
+  assert.equal(calls,1);
+  for (const path of ['/_AMapService/v3/ip','/_AMapService/https://evil.example/','/_AMapService/v3/place/text?callback=alert(1)','/_AMapService/v3/place/text?q='+ 'a'.repeat(4097)]) assert.equal((await app.request(path)).status,400);
+  assert.equal((await app.request('/_AMapService/v3/place/text',{method:'POST',data:{}})).status,405);
+  assert.equal(calls,1,'invalid requests must not reach AMap');
+  t.mock.method(globalThis,'fetch',async () => {throw new Error('private upstream details');});
+  const failed = await app.request('/_AMapService/v3/place/text');
+  assert.equal(failed.status,502);assert.doesNotMatch(await failed.text(),/private upstream|test-security/);
+  const {app:missing} = await fixture(t);
+  assert.equal((await missing.request('/api/maps/config')).status,503);
+  assert.doesNotMatch((await missing.request('/')).headers.get('content-security-policy'),/'unsafe-eval'/);
+  const {app:production} = await fixture(t,{...env,FEISHU_APP_ID:'cli_amap',FEISHU_APP_SECRET:'test-secret',ADMIN_OPEN_IDS:'ou_admin',BASE_URL:'https://attendance.example.com'});
+  const headers = {Host:'attendance.example.com'};
+  for (const path of ['/api/maps/config','/_AMapService/v3/place/text']) assert.equal((await production.request(path,{headers})).status,401);
 });

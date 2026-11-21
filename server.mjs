@@ -28,8 +28,11 @@ export function configuration(env = process.env) {
   if (!enabled && env.HOST && env.HOST !== '127.0.0.1') throw new Error('本地演示只允许监听 127.0.0.1；请先配置飞书身份验证再部署');
   const adminOpenIds = (env.ADMIN_OPEN_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
   if (enabled && (!adminOpenIds.length || adminOpenIds.some(id => !/^ou_[a-zA-Z0-9]+$/.test(id)))) throw new Error('ADMIN_OPEN_IDS 必须包含有效的管理员 Open ID（ou_ 开头）');
+  const amapKey = env.AMAP_JS_KEY?.trim() || '', amapSecurityCode = env.AMAP_SECURITY_JS_CODE?.trim() || '';
+  if (Boolean(amapKey) !== Boolean(amapSecurityCode)) throw new Error('高德地图需要同时配置 AMAP_JS_KEY 和 AMAP_SECURITY_JS_CODE');
+  if ([amapKey, amapSecurityCode].some(value => value && !/^[a-zA-Z0-9_-]{16,128}$/.test(value))) throw new Error('高德地图配置格式不正确');
   return { mode: enabled ? 'feishu' : 'demo', host: enabled ? (env.HOST || '127.0.0.1') : '127.0.0.1', port, baseUrl,
-    appId: env.FEISHU_APP_ID, appSecret: env.FEISHU_APP_SECRET, adminOpenIds, tenantKey: env.FEISHU_TENANT_KEY };
+    appId: env.FEISHU_APP_ID, appSecret: env.FEISHU_APP_SECRET, adminOpenIds, tenantKey: env.FEISHU_TENANT_KEY, amapKey, amapSecurityCode };
 }
 
 function initialState(mode) {
@@ -132,7 +135,8 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Permissions-Policy', 'geolocation=(self)');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://lf-scm-cn.feishucdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.feishu.cn https://*.larksuite.com");
+    const contentSecurityPolicy = "default-src 'self'; script-src 'self' https://lf-scm-cn.feishucdn.com https://webapi.amap.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob: https://*.amap.com https://*.autonavi.com; connect-src 'self' https://*.amap.com https://*.autonavi.com; worker-src 'self' blob:; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.feishu.cn https://*.larksuite.com";
+    res.setHeader('Content-Security-Policy', contentSecurityPolicy);
     try {
       const allowedHosts = config.mode === 'demo' ? [`127.0.0.1:${server.address().port}`, `localhost:${server.address().port}`] : [new URL(config.baseUrl).host];
       if (!allowedHosts.includes(req.headers.host)) throw new DomainError('无效的访问域名', 403);
@@ -186,7 +190,41 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       }
       if (url.pathname === '/api/state' && req.method === 'GET') {
         requireAuth();
-        return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session, integration: { configured: config.mode === 'feishu', appId: config.appId || null } });
+        return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session, integration: { configured: config.mode === 'feishu', appId: config.appId || null, mapConfigured: Boolean(config.amapKey && config.amapSecurityCode) } });
+      }
+      if (url.pathname === '/api/maps/config' && req.method === 'GET') {
+        requireAdmin();
+        if (!config.amapKey || !config.amapSecurityCode) throw new DomainError('高德地图尚未接通，请联系组织管理员完成地图配置', 503);
+        return json(200, { key: config.amapKey });
+      }
+      if (url.pathname.startsWith('/_AMapService/')) {
+        requireAdmin();
+        if (req.method !== 'GET') throw new DomainError('地图服务仅支持读取', 405);
+        if (!config.amapKey || !config.amapSecurityCode) throw new DomainError('高德地图尚未接通', 503);
+        const path = url.pathname.slice('/_AMapService'.length);
+        const targets = { '/v4/map/styles': 'https://webapi.amap.com', '/v3/place/text': 'https://restapi.amap.com' };
+        if (!targets[path] || url.search.length > 4096) throw new DomainError('不支持的地图请求', 400);
+        const callback = url.searchParams.get('callback');
+        if (callback && !/^[a-zA-Z_$][\w$.]{0,100}$/.test(callback)) throw new DomainError('无效的地图回调', 400);
+        const target = new URL(path, targets[path]);
+        target.search = url.search;
+        target.searchParams.set('key', config.amapKey);
+        target.searchParams.set('jscode', config.amapSecurityCode);
+        let response, body;
+        try {
+          response = await fetch(target, { headers: { Referer: `${origin}/` }, redirect: 'error', signal: AbortSignal.timeout(10_000) });
+          if (!response.ok) throw new Error();
+          const chunks = [];let length = 0;
+          for await (const chunk of response.body) {
+            length += chunk.length;
+            if (length > 2 * 1024 * 1024) throw new Error();
+            chunks.push(chunk);
+          }
+          body = Buffer.concat(chunks).toString('utf8').replaceAll(config.amapSecurityCode, '[redacted]');
+        } catch { throw new DomainError('高德地图服务暂时不可用，请稍后重试', 502); }
+        requireAdmin();
+        res.writeHead(200, { 'Content-Type': callback ? 'text/javascript; charset=utf-8' : 'application/json; charset=utf-8' });
+        return res.end(body);
       }
       if (url.pathname === '/api/feishu/jsapi-config' && req.method === 'GET') {
         requireAuth();
@@ -368,10 +406,11 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       }
       if (url.pathname.startsWith('/api/')) throw new DomainError('接口不存在', 404);
       const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'] };
-      for (const path of ['location-map.mjs', 'vendor/gcoord.mjs', 'vendor/leaflet.js']) files[`/${path}`] = [path, 'text/javascript'];
-      files['/vendor/leaflet.css'] = ['vendor/leaflet.css', 'text/css'];
+      for (const path of ['location-map.mjs', 'vendor/gcoord.mjs']) files[`/${path}`] = [path, 'text/javascript'];
       const asset = files[url.pathname];
       if (!asset || !['GET', 'HEAD'].includes(req.method)) throw new DomainError('页面不存在', 404);
+      // AMap dynamically compiles its plugins; keep this exception off employee and signed-out pages.
+      if (asset[1] === 'text/html' && config.amapKey && session?.role === 'org_admin') res.setHeader('Content-Security-Policy', contentSecurityPolicy.replace("script-src 'self'", "script-src 'self' 'unsafe-eval' https://jsapi-service.amap.com"));
       res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` });
       res.end(req.method === 'HEAD' ? undefined : readFileSync(join(ROOT, 'public', asset[0])));
     } catch (error) {

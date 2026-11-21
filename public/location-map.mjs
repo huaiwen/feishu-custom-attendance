@@ -1,72 +1,144 @@
 import gcoord from './vendor/gcoord.mjs';
-import './vendor/leaflet.js';
 
 const crs = value => value === 'gcj02' ? gcoord.GCJ02 : gcoord.WGS84;
+let sdk;
+function loadMap() {
+  if (window.AMap?.Map) return Promise.resolve(window.AMap);
+  if (!sdk) sdk = (async () => {
+    const response = await fetch('/api/maps/config', { headers: { Accept: 'application/json' } });
+    const config = await response.json();
+    if (!response.ok) throw new Error(config.error || '高德地图暂时不可用，请稍后重试');
+    window._AMapSecurityConfig = { serviceHost: `${location.origin}/_AMapService` };
+    return new Promise((resolve, reject) => {
+      const script = document.createElement('script');
+      const fail = () => { clearTimeout(timer);script.remove();delete window.__attendanceMapReady;reject(new Error('高德地图加载失败，请检查网络后重试')); };
+      const timer = setTimeout(fail, 20_000);
+      window.__attendanceMapReady = () => { clearTimeout(timer);delete window.__attendanceMapReady;resolve(window.AMap); };
+      script.src = `https://webapi.amap.com/maps?v=2.0&key=${encodeURIComponent(config.key)}&plugin=AMap.ToolBar,AMap.Scale,AMap.PlaceSearch&callback=__attendanceMapReady`;
+      script.onerror = fail;
+      document.head.append(script);
+    });
+  })().catch(error => { sdk = null;throw error; });
+  return sdk;
+}
 
 export function mountLocationMap(form, getPosition) {
   const field = name => form.elements.namedItem(name);
   const status = form.querySelector('#map-status');
+  const results = form.querySelector('#map-results');
+  const search = form.querySelector('#map-search');
+  const searchButton = form.querySelector('#map-search-button');
+  const locateButton = form.querySelector('#map-locate');
+  const centerButton = form.querySelector('#select-map-center');
+  const retryButton = form.querySelector('#map-retry');
   const coordinateSystem = field('coordinateSystem');
   let previousSystem = coordinateSystem.value;
-  let active = true;
+  let active = true, map, circle, marker, places, readinessTimer, searchRequest = 0;
+  const isOpen = () => active && form.isConnected && form.closest('dialog')?.open;
   const point = () => {
     if (!field('latitude').value || !field('longitude').value) return null;
     const lat = Number(field('latitude').value), lng = Number(field('longitude').value);
     if (!Number.isFinite(lat) || !Number.isFinite(lng) || Math.abs(lat) > 85 || Math.abs(lng) > 180) return null;
-    return gcoord.transform([lng, lat], crs(coordinateSystem.value), gcoord.WGS84).reverse();
+    return gcoord.transform([lng, lat], crs(coordinateSystem.value), gcoord.GCJ02);
   };
-  const map = window.L.map(form.querySelector('#location-map'), { scrollWheelZoom: false, zoomControl: false }).setView(point() || [35, 105], point() ? 17 : 4);
-  window.L.control.zoom({ zoomInTitle: '放大', zoomOutTitle: '缩小' }).addTo(map);
-  window.L.control.scale({ imperial: false }).addTo(map);
-  window.L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>',
-  }).on('tileerror', () => { status.textContent = '底图加载失败，请检查网络后重新打开；也可展开坐标设置。'; }).addTo(map);
-  let circle, marker;
   const update = () => {
+    if (!map) return;
     const center = point(), radius = Number(field('radius').value);
-    if (!center || !Number.isFinite(radius) || radius < 10 || radius > 5000) return;
-    if (circle) { circle.setLatLng(center).setRadius(radius); marker.setLatLng(center); }
-    else {
-      circle = window.L.circle(center, { radius, color: '#3370ff', weight: 2, fillOpacity: 0.12 }).addTo(map);
-      marker = window.L.circleMarker(center, { radius: 6, color: '#fff', weight: 2, fillColor: '#3370ff', fillOpacity: 1 }).addTo(map);
-      map.fitBounds(circle.getBounds(), { padding: [25, 25], maxZoom: 18 });
+    if (!center || !Number.isFinite(radius) || radius < 10 || radius > 5000) {
+      if (circle) { map.remove([circle, marker]);circle = marker = null; }
+      status.textContent = '请先搜索地点或在地图上选取中心，再确认打卡半径。';
+      return;
     }
-    status.textContent = `已选中心 ${Number(field('latitude').value).toFixed(6)}, ${Number(field('longitude').value).toFixed(6)} · 半径 ${radius} 米`;
+    if (circle) { circle.setCenter(center);circle.setRadius(radius);marker.setCenter(center); }
+    else {
+      circle = new window.AMap.Circle({ center, radius, strokeColor: '#3370ff', strokeWeight: 2, fillColor: '#3370ff', fillOpacity: 0.12, bubble: true });
+      marker = new window.AMap.CircleMarker({ center, radius: 6, strokeColor: '#fff', strokeWeight: 2, fillColor: '#3370ff', fillOpacity: 1, bubble: true });
+      map.add([circle, marker]);
+      map.setFitView([circle], true, [30, 30, 30, 30], 18);
+    }
+    status.textContent = `已选定考勤中心 · 半径 ${radius} 米。可继续点击地图微调，确认后保存地点。`;
   };
-  const select = latlng => {
-    const wrapped = latlng.wrap();
-    const [lng, lat] = gcoord.transform([wrapped.lng, wrapped.lat], gcoord.WGS84, crs(coordinateSystem.value));
-    field('latitude').value = lat.toFixed(7); field('longitude').value = lng.toFixed(7);
+  const select = lnglat => {
+    const [lng, lat] = gcoord.transform([lnglat.getLng(), lnglat.getLat()], gcoord.GCJ02, crs(coordinateSystem.value));
+    field('latitude').value = lat.toFixed(7);field('longitude').value = lng.toFixed(7);
     update();
   };
-  map.on('click', event => select(event.latlng));
-  form.querySelector('#select-map-center').onclick = () => select(map.getCenter());
-  form.querySelector('#map-locate').onclick = async event => {
-    const button = event.currentTarget; button.disabled = true; status.textContent = '正在获取当前位置…';
+  const searchPlaces = () => {
+    const keyword = search.value.trim();
+    if (!keyword || !places) { status.textContent = '请输入园区、楼栋名称或地址。';search.focus();return; }
+    const request = ++searchRequest;
+    searchButton.disabled = true;results.replaceChildren();status.textContent = '正在搜索高德地图…';
+    places.search(keyword, (code, data) => {
+      if (!isOpen() || request !== searchRequest) return;
+      searchButton.disabled = false;
+      if (code !== 'complete' || !data?.poiList?.pois?.length) {
+        status.textContent = code === 'no_data' ? '没有找到该地点，请加上城市名称重试，或直接在地图选点。' : '地点搜索暂时不可用，请重试或直接在地图选点。';
+        return;
+      }
+      for (const place of data.poiList.pois.filter(p => p.location)) {
+        const button = document.createElement('button');button.type = 'button';button.className = 'map-result';
+        const name = document.createElement('strong');name.textContent = place.name;
+        const address = document.createElement('span');address.textContent = [place.pname, place.cityname, place.adname, typeof place.address === 'string' ? place.address : ''].filter(Boolean).join(' ');
+        button.append(name, address);
+        button.onclick = () => {
+          select(place.location);map.setZoomAndCenter(17, [place.location.getLng(), place.location.getLat()]);
+          if (!field('name').value.trim()) field('name').value = place.name.slice(0, 60);
+          if (!field('address').value.trim()) field('address').value = address.textContent.slice(0, 200);
+          results.replaceChildren();
+        };
+        results.append(button);
+      }
+      status.textContent = results.children.length ? '选择下方搜索结果，再在地图上核对楼栋中心。' : '搜索结果没有可选坐标，请调整关键词或直接在地图选点。';
+    });
+  };
+  searchButton.onclick = searchPlaces;
+  const searchKey = event => { if (event.key === 'Enter') { event.preventDefault();searchPlaces(); } };
+  search.addEventListener('keydown', searchKey);
+  centerButton.onclick = () => { if (map) select(map.getCenter()); };
+  locateButton.onclick = async () => {
+    locateButton.disabled = true;status.textContent = '正在获取当前位置…';
     try {
       const position = await getPosition();
-      if (!active || !form.isConnected || !form.closest('dialog')?.open) return;
-      const [lng, lat] = gcoord.transform([position.longitude, position.latitude], crs(position.coordinateSystem), gcoord.WGS84);
-      map.setView([lat, lng], 17);
+      if (!isOpen() || !map) return;
+      const center = gcoord.transform([position.longitude, position.latitude], crs(position.coordinateSystem), gcoord.GCJ02);
+      map.setZoomAndCenter(17, center);
       status.textContent = `已移动到附近，定位误差约 ${Math.round(position.accuracy)} 米。请点击地图选择考勤中心。`;
-    } catch (error) { status.textContent = error.message; }
-    finally { button.disabled = false; }
+    } catch (error) { if (isOpen()) status.textContent = error.message; }
+    finally { if (active) locateButton.disabled = false; }
   };
   const change = event => {
     if (event.target === coordinateSystem) {
       if (field('latitude').value && field('longitude').value) {
         const [lng, lat] = gcoord.transform([Number(field('longitude').value), Number(field('latitude').value)], crs(previousSystem), crs(coordinateSystem.value));
-        field('latitude').value = lat.toFixed(7); field('longitude').value = lng.toFixed(7);
+        field('latitude').value = lat.toFixed(7);field('longitude').value = lng.toFixed(7);
       }
       previousSystem = coordinateSystem.value;
     }
     if (['latitude', 'longitude', 'coordinateSystem', 'radius'].includes(event.target.name)) {
-      update(); if (event.target.name !== 'radius' && point()) map.panTo(point());
-      if (event.target.name === 'radius' && circle) map.fitBounds(circle.getBounds(), { padding: [25, 25], maxZoom: 18 });
+      update();
+      if (map && point()) map.setCenter(point());
+      if (event.target.name === 'radius' && circle) map.setFitView([circle], true, [30, 30, 30, 30], 18);
     }
   };
-  form.addEventListener('change', change);
-  field('radius').addEventListener('input', update);
-  update();
-  return () => { active = false; map.remove(); form.removeEventListener('change', change); field('radius')?.removeEventListener('input', update); };
+  const start = async () => {
+    for (const control of [searchButton, locateButton, centerButton]) control.disabled = true;
+    retryButton.hidden = true;status.textContent = '正在加载高德地图…';
+    clearTimeout(readinessTimer);map?.destroy();map = circle = marker = null;
+    try {
+      const AMap = await loadMap();
+      if (!isOpen()) return;
+      map = new AMap.Map(form.querySelector('#location-map'), { viewMode: '2D', center: point() || [105, 35], zoom: point() ? 17 : 4, scrollWheel: false });
+      map.addControl(new AMap.ToolBar());map.addControl(new AMap.Scale());
+      places = new AMap.PlaceSearch({ pageSize: 5, extensions: 'base', citylimit: false });
+      map.on('click', event => select(event.lnglat));
+      map.on('complete', () => { clearTimeout(readinessTimer);if (!isOpen()) return;retryButton.hidden = true;update(); });
+      readinessTimer = setTimeout(() => { if (isOpen()) { status.textContent = '高德底图尚未加载完成，请检查网络或点击重新加载。';retryButton.hidden = false; } }, 20_000);
+      for (const control of [searchButton, locateButton, centerButton]) control.disabled = false;
+      update();
+    } catch (error) { if (isOpen()) { status.textContent = error instanceof TypeError ? '高德地图组件加载失败，请重新加载或联系管理员。' : error.message;retryButton.hidden = false; } }
+  };
+  retryButton.onclick = start;
+  form.addEventListener('change', change);field('radius').addEventListener('input', update);
+  start();
+  return () => { active = false;searchRequest++;clearTimeout(readinessTimer);map?.destroy();form.removeEventListener('change', change);search.removeEventListener('keydown', searchKey);field('radius')?.removeEventListener('input', update); };
 }

@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#245fdf">
+  <title>自定义考勤 · 精细化排班</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">跳到工作区</a>
+  <div class="app-shell">
+    <aside class="sidebar" aria-label="主导航">
+      <a class="brand" href="#schedules"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M8 10V7h16v17H8V10Z" stroke="currentColor" stroke-width="2"/><path d="m12 16 3 3 6-7M12 4v6M20 4v6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></span><span>自定义考勤</span></a>
+      <div class="workspace"><span class="workspace-icon">企</span><span>企业考勤工作台<small id="workspace-mode">正在连接…</small></span></div>
+      <div class="nav-label">工作空间</div>
+      <nav id="navigation"></nav>
+      <div class="sidebar-bottom"><div class="connection"><span class="connection-dot"></span><div id="connection-label">本地工作空间<small>按人 · 按时段 · 按地点</small></div></div><div class="sidebar-user"><span class="avatar admin">管</span><div id="user-label">考勤管理员<small>管理工作台</small></div></div></div>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar"><div class="mobile-brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="5" width="16" height="16" rx="3"/><path d="M8 3v4M16 3v4m-8 7 3 3 5-6" stroke-linecap="round" stroke-linejoin="round"/></svg>自定义考勤</div><div class="breadcrumb">工作空间 <span>/</span> <strong id="breadcrumb-label">精细化排班</strong></div><div class="topbar-right"><span id="mode-label" class="mode-tag">加载中</span><span class="topbar-date" id="topbar-date"></span><span class="avatar small">考</span><button id="session-logout" class="text-button session-logout" data-action="logout" title="仅退出本应用，不退出飞书客户端" hidden>退出</button></div></header>
+      <main id="main" tabindex="-1"><div class="loading"><span class="spinner"></span>正在加载考勤工作台…</div></main>
+    </div>
+  </div>
+  <dialog id="drawer" class="drawer" aria-labelledby="drawer-title"><form id="drawer-form"><div class="drawer-head"><div><p class="eyebrow" id="drawer-eyebrow">排班管理</p><h2 id="drawer-title">新增排班</h2></div><button type="button" class="icon-button" data-action="close-drawer" aria-label="关闭编辑面板">×</button></div><div class="drawer-body" id="drawer-body"></div><div class="form-error" id="form-error" role="alert"></div><div class="drawer-footer" id="drawer-footer"></div></form></dialog>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

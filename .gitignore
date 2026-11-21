@@ -1,0 +1,15 @@
+data/*
+!data/.gitkeep
+.env*
+!.env.example
+*.pem
+*.key
+.DS_Store
+ops/
+node_modules/
+test-results/
+*.log
+.impeccable/
+backups/
+runtime/
+certbot-venv/

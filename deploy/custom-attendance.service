@@ -1,0 +1,24 @@
+[Unit]
+Description=Custom Attendance
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=custom-attendance
+Group=custom-attendance
+WorkingDirectory=/opt/custom-attendance
+EnvironmentFile=/opt/custom-attendance/.env
+Environment=NODE_ENV=production HOST=127.0.0.1 PORT=4173
+ExecStart=/opt/custom-attendance/runtime/node/bin/node /opt/custom-attendance/server.mjs
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/custom-attendance/data
+ProtectHome=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

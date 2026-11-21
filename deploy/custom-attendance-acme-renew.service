@@ -1,0 +1,11 @@
+[Unit]
+Description=Renew Custom Attendance IP Certificate
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+UMask=0077
+ExecStart=/opt/custom-attendance/certbot-venv/bin/certbot renew --cert-name custom-attendance --config-dir /etc/custom-attendance/acme --work-dir /var/lib/custom-attendance-acme --logs-dir /var/log/custom-attendance-acme --no-directory-hooks --deploy-hook /opt/custom-attendance/deploy/reload-nginx.sh --non-interactive

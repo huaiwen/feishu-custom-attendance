@@ -1,0 +1,89 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { exchangeCode, getJsapiConfig } from '../feishu.mjs';
+
+const response = data => ({ ok: true, json: async () => data });
+
+test('OAuth exchanges the code server-side and returns only the verified identity', async () => {
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, options });
+    assert.ok(options.signal instanceof AbortSignal);
+    assert.equal(options.redirect, 'error');
+    return response(calls.length === 1
+      ? { code: 0, access_token: 'private-token', expires_in: 7200 }
+      : { code: 0, data: { open_id: 'ou_alice', name: '员工 A', tenant_key: 'tenant-a', email: 'private@example.com' } });
+  };
+  assert.deepEqual(await exchangeCode({ appId: 'cli_auth', appSecret: 'private-secret', redirectUri: 'https://example.com/auth/callback', code: 'one-use-code', fetch }),
+    { openId: 'ou_alice', name: '员工 A', tenantKey: 'tenant-a' });
+  assert.equal(calls[0].url, 'https://open.feishu.cn/open-apis/authen/v2/oauth/token');
+  assert.deepEqual(JSON.parse(calls[0].options.body), {
+    grant_type: 'authorization_code', client_id: 'cli_auth', client_secret: 'private-secret', code: 'one-use-code', redirect_uri: 'https://example.com/auth/callback',
+  });
+  assert.equal(calls[1].url, 'https://open.feishu.cn/open-apis/authen/v1/user_info');
+  assert.equal(calls[1].options.headers.Authorization, 'Bearer private-token');
+});
+
+test('upstream failures do not expose raw error messages or credentials', async () => {
+  const input = { appId: 'cli_error', appSecret: 'private-secret', redirectUri: 'https://example.com/auth/callback', code: 'one-use-code' };
+  await assert.rejects(exchangeCode({ ...input, fetch: async () => response({ code: 20002, error_description: 'private-secret private-token' }) }), error => {
+    assert.match(error.message, /20002/);
+    assert.doesNotMatch(error.message, /private-/);
+    return true;
+  });
+  await assert.rejects(exchangeCode({ ...input, fetch: async () => { throw new Error('private-token network timeout'); } }), /检查网络/);
+  await assert.rejects(exchangeCode({ ...input, fetch: async () => response({ code: 0 }) }), /缺少访问凭证/);
+  await assert.rejects(exchangeCode({ ...input, fetch: async url => response(url.endsWith('/user_info') ? { code: 0, data: { open_id: 'ou_missing_tenant' } } : { code: 0, access_token: 'token' }) }), /身份响应不完整/);
+});
+
+test('JSAPI uses documented token and ticket expiry, shares concurrent refresh, and signs the exact URL without fragment', async t => {
+  let now = 1_800_000_000_000;
+  t.mock.method(Date, 'now', () => now);
+  const calls = [];
+  const fetch = async (url, options) => {
+    calls.push({ url, options });
+    return response(url.includes('/oauth/v3/token')
+      ? { code: 0, access_token: 'tenant-token', expires_in: 200 }
+      : { code: 0, data: { ticket: 'ticket-secret', expire_in: 100 } });
+  };
+  const input = { appId: 'cli_cache', appSecret: 'secret', url: 'https://example.com/?x=hello%20world#attendance', fetch };
+  const [config, concurrent] = await Promise.all([getJsapiConfig(input), getJsapiConfig(input)]);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0].url, 'https://accounts.feishu.cn/oauth/v3/token');
+  assert.deepEqual(JSON.parse(calls[0].options.body), { grant_type: 'client_credentials', client_id: 'cli_cache', client_secret: 'secret' });
+  assert.equal(calls[1].url, 'https://open.feishu.cn/open-apis/jssdk/ticket/get');
+  assert.equal(calls[1].options.headers.Authorization, 'Bearer tenant-token');
+  assert.equal(config.timestamp, now);
+  assert.notEqual(config.nonceStr, concurrent.nonceStr);
+  assert.deepEqual(config.jsApiList, ['getLocation', 'requestAccess']);
+  assert.equal(config.signature, createHash('sha1').update(`jsapi_ticket=ticket-secret&noncestr=${config.nonceStr}&timestamp=${now}&url=https://example.com/?x=hello%20world`).digest('hex'));
+  assert.doesNotMatch(JSON.stringify(config), /ticket-secret|tenant-token/);
+  now += 89_000;
+  await getJsapiConfig(input);
+  assert.equal(calls.length, 2);
+  now += 2_000;
+  await getJsapiConfig(input);
+  assert.equal(calls.length, 3, 'expired ticket refreshes while token remains valid');
+  now += 100_000;
+  await getJsapiConfig(input);
+  assert.equal(calls.length, 5, 'expired token and ticket both refresh');
+});
+
+test('failed ticket requests can retry and credential changes cannot reuse the old cache', async () => {
+  let shouldFail = true;
+  let calls = 0;
+  const fetch = async url => {
+    calls++;
+    if (url.includes('/oauth/v3/token')) return response({ code: 0, access_token: 'token', expires_in: 7200 });
+    return response(shouldFail ? { code: 99991663, msg: 'private-token' } : { code: 0, data: { ticket: 'ticket', expire_in: 7200 } });
+  };
+  const input = { appId: 'cli_retry', appSecret: 'secret', url: 'https://example.com/', fetch };
+  await assert.rejects(getJsapiConfig(input), /99991663/);
+  shouldFail = false;
+  await getJsapiConfig(input);
+  assert.equal(calls, 3);
+  await getJsapiConfig({ ...input, appSecret: 'rotated-secret' });
+  assert.equal(calls, 5);
+  await assert.rejects(getJsapiConfig({ ...input, url: 'file:///etc/passwd' }), /网页地址格式/);
+});

@@ -1,0 +1,20 @@
+# Only application runtime files enter the build context.
+*
+!Dockerfile
+!package.json
+!server.mjs
+!domain.mjs
+!feishu.mjs
+!schedule-tools.mjs
+!public/
+!public/**
+
+# Keep these excluded even if they appear under an allowed directory.
+.env
+.env.*
+**/.env
+**/.env.*
+data/
+**/data/
+test-results/
+**/test-results/

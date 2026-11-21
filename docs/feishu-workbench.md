@@ -105,6 +105,6 @@ HOST=0.0.0.0
 - JSAPI 票据：`POST https://open.feishu.cn/open-apis/jssdk/ticket/get`，读取 `data.ticket` 与 `data.expire_in`；服务端缓存并在过期前刷新。[文档](https://open.feishu.cn/document/ukTMukTMukTM/uYTM5UjL2ETO14iNxkTN/h5_js_sdk/authorization)
 - JSSDK：`https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.48.js`。[官方 SDK 引入说明](https://open.feishu.cn/document/client-docs/h5/introduction)
 
-已登录的前端通过 `GET /api/feishu/jsapi-config?url=...` 获取 JSAPI 配置，`url` 使用 `encodeURIComponent(location.href.split('#')[0])`。服务端仅为 `BASE_URL` 同源页面签名。前端把配置交给 `h5sdk.config`，在 `h5sdk.ready` 后调用 `tt.getLocation({ timeout: 15, cacheTimeout: 0, accuracy: 'best', success, fail })`。前端保留实际返回的坐标系 `type`，后端强制检查它与地点的 `coordinateSystem` 相同；允许 `wgs84` 或 `gcj02`，不允许缺失或混用。地图坐标系选择由管理员显式配置，默认 WGS84。
+已登录的前端通过 `GET /api/feishu/jsapi-config?url=...` 获取 JSAPI 配置，`url` 使用 `encodeURIComponent(location.href.split('#')[0])`。服务端仅为 `BASE_URL` 同源页面签名。前端把配置交给 `h5sdk.config`，同时等待 `h5sdk.ready` 和 `config.onSuccess` 后才调用 `tt.getLocation({ timeout: 15, cacheTimeout: 0, accuracy: 'best', success, fail })`；鉴权失败或超时会停止定位并允许重试。前端保留实际返回的坐标系 `type`，后端强制检查它与地点的 `coordinateSystem` 相同；允许 `wgs84` 或 `gcj02`，不允许缺失或混用。地图坐标系选择由管理员显式配置，默认 WGS84。
 
 本地测试覆盖 API 请求字段、错误脱敏、凭证过期、并发刷新与签名计算；它不等于真实飞书租户、真实手机或现场定位验收。

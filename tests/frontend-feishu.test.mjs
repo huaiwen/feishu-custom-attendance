@@ -1,0 +1,121 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { createContext, runInContext } from 'node:vm';
+import { setImmediate } from 'node:timers/promises';
+
+const app = readFileSync(new URL('../public/app.js', import.meta.url), 'utf8');
+const start = app.indexOf('let feishuSdkReady;');
+const end = app.indexOf('async function checkin(', start);
+assert.ok(start >= 0 && end > start, 'test the actual SDK preparation and location functions');
+
+function sdkHarness() {
+  const callbacks = {};
+  const timers = new Map();
+  let timerId = 0;
+  let locationCalls = 0;
+  let configCalls = 0;
+  const context = createContext({
+    ui: { db: { mode: 'feishu' } },
+    navigator: { userAgent: 'Feishu mobile' },
+    location: { href: 'https://attendance.example.com/#checkin' },
+    api: async () => ({ appId: 'cli_test', signature: 'test-signature' }),
+    setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
+    clearTimeout: id => timers.delete(id),
+    window: {
+      h5sdk: {
+        error: callback => { callbacks.error = callback; },
+        ready: callback => { callbacks.ready = callback; },
+        config: options => { configCalls++; callbacks.config = options; },
+      },
+      tt: {
+        getLocation: options => {
+          locationCalls++;
+          options.success({ latitude: 40, longitude: 116, horizontalAccuracy: 5, timestamp: 1800000000000, type: 'wgs84' });
+        },
+      },
+    },
+  });
+  runInContext(app.slice(start, end), context);
+  return { callbacks, timers, getPosition: () => context.getPosition(), locationCalls: () => locationCalls, configCalls: () => configCalls };
+}
+
+test('Feishu location waits for authentication when SDK ready arrives first', async () => {
+  const sdk = sdkHarness();
+  const pending = sdk.getPosition();
+  await setImmediate();
+  sdk.callbacks.ready();
+  await setImmediate();
+  assert.equal(sdk.locationCalls(), 0, 'SDK readiness alone must not start location');
+  assert.equal(sdk.timers.size, 1, 'authentication must still have a timeout');
+  sdk.callbacks.config.onSuccess({ session_key: 'test-session' });
+  assert.equal((await pending).coordinateSystem, 'wgs84');
+  assert.equal(sdk.locationCalls(), 1);
+  assert.equal(sdk.timers.size, 0);
+});
+
+test('Feishu location also waits for SDK ready when authentication succeeds first', async () => {
+  const sdk = sdkHarness();
+  const pending = sdk.getPosition();
+  await setImmediate();
+  sdk.callbacks.config.onSuccess({ session_key: 'test-session' });
+  await setImmediate();
+  assert.equal(sdk.locationCalls(), 0);
+  sdk.callbacks.ready();
+  await pending;
+  assert.equal(sdk.locationCalls(), 1);
+  assert.equal(sdk.timers.size, 0);
+});
+
+for (const failure of ['onFail', 'error']) {
+  test(`Feishu authentication ${failure} rejects without location and permits a fresh retry`, async () => {
+    const sdk = sdkHarness();
+    const pending = sdk.getPosition();
+    const rejected = assert.rejects(pending, /认证失败/);
+    await setImmediate();
+    if (failure === 'onFail') sdk.callbacks.ready();
+    else sdk.callbacks.config.onSuccess({ session_key: 'test-session' });
+    await setImmediate();
+    if (failure === 'onFail') sdk.callbacks.config.onFail({ errCode: 1 });
+    else sdk.callbacks.error({ errCode: 1 });
+    await rejected;
+    sdk.callbacks.ready();
+    sdk.callbacks.config.onSuccess({ session_key: 'late-session' });
+    await setImmediate();
+    assert.equal(sdk.locationCalls(), 0, 'late callbacks cannot revive a failed attempt');
+    assert.equal(sdk.timers.size, 0);
+
+    const retry = sdk.getPosition();
+    await setImmediate();
+    assert.equal(sdk.configCalls(), 2, 'failed initialization must not remain cached');
+    sdk.callbacks.config.onSuccess({ session_key: 'new-session' });
+    sdk.callbacks.ready();
+    await retry;
+    assert.equal(sdk.locationCalls(), 1);
+  });
+}
+
+test('Feishu authentication timeout rejects after SDK ready and permits retry', async () => {
+  const sdk = sdkHarness();
+  const pending = sdk.getPosition();
+  const rejected = assert.rejects(pending, /认证超时/);
+  await setImmediate();
+  sdk.callbacks.ready();
+  await setImmediate();
+  assert.equal(sdk.locationCalls(), 0);
+  const [id, timer] = [...sdk.timers.entries()].find(([, timer]) => timer.delay === 15000);
+  sdk.timers.delete(id);
+  timer.callback();
+  await rejected;
+  sdk.callbacks.config.onSuccess({ session_key: 'late-session' });
+  await setImmediate();
+  assert.equal(sdk.locationCalls(), 0);
+
+  const retry = sdk.getPosition();
+  await setImmediate();
+  sdk.callbacks.ready();
+  sdk.callbacks.config.onSuccess({ session_key: 'new-session' });
+  await retry;
+  assert.equal(sdk.configCalls(), 2);
+  assert.equal(sdk.locationCalls(), 1);
+});

@@ -249,11 +249,14 @@ async function prepareFeishuSdk() {
       if (!window.h5sdk || !window.tt) throw new Error('请在手机飞书工作台中打开应用后定位');
       const config = await api(`/api/feishu/jsapi-config?url=${encodeURIComponent(location.href.split('#')[0])}`);
       await new Promise((resolve,reject) => {
+        let sdkReady = false, authenticated = false;
         const timeout = setTimeout(() => reject(new Error('飞书定位认证超时，请重新打开应用')),15000);
         const fail = () => {clearTimeout(timeout);reject(new Error('飞书定位认证失败，请检查应用权限与安全域名'));};
+        // ready 只表示 SDK 初始化完成，调用定位还必须等待鉴权成功。
+        const complete = () => {if (sdkReady && authenticated) {clearTimeout(timeout);resolve();}};
         window.h5sdk.error(fail);
-        window.h5sdk.ready(() => {clearTimeout(timeout);resolve();});
-        window.h5sdk.config({...config,onSuccess:() => {},onFail:fail});
+        window.h5sdk.ready(() => {sdkReady = true;complete();});
+        window.h5sdk.config({...config,onSuccess:() => {authenticated = true;complete();},onFail:fail});
       });
     })().catch(error => {feishuSdkReady = null;throw error;});
   }

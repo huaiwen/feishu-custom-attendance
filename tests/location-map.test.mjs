@@ -70,6 +70,7 @@ test('Late automatic location cannot override a user selection; denied location 
   assert.equal(f.map.moves.length,0);assert.equal(f.fields.get('longitude').value,'116.4000000');
   f.cleanup();
   const denied = fixture(t,async () => {throw new Error('未允许定位');});await setImmediate();
+  denied.map.events.complete();
   assert.equal(denied.nodes.get('#map-search-button').disabled,false);
   assert.match(denied.nodes.get('#map-status').textContent,/直接搜索地点/);
 });

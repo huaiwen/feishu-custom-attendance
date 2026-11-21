@@ -127,7 +127,7 @@ export function mountLocationMap(form, getPosition) {
       places = new AMap.PlaceSearch({ pageSize: 5, extensions: 'base', citylimit: false });
       map.on('click', event => select(event.lnglat));
       map.on('dragstart', () => { interaction++; });
-      map.on('complete', () => { clearTimeout(readinessTimer);if (!isOpen()) return;retryButton.hidden = true;update(); });
+      map.on('complete', () => { clearTimeout(readinessTimer);if (!isOpen()) return;retryButton.hidden = true;if (point()) update(); });
       readinessTimer = setTimeout(() => { if (isOpen()) { status.textContent = '高德底图尚未加载完成，请检查网络或点击重新加载。';retryButton.hidden = false; } }, 20_000);
       for (const control of [searchButton, locateButton, centerButton]) control.disabled = false;
       update();

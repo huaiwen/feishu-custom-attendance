@@ -1,7 +1,7 @@
 FROM node:24-alpine
 
 WORKDIR /app
-COPY package.json server.mjs domain.mjs feishu.mjs schedule-tools.mjs ./
+COPY package.json server.mjs domain.mjs feishu.mjs schedule-tools.mjs access.mjs ./
 COPY public/ ./public/
 RUN mkdir -p /app/data && chown node:node /app/data && chmod 700 /app/data
 

@@ -87,3 +87,36 @@ test('failed ticket requests can retry and credential changes cannot reuse the o
   assert.equal(calls, 5);
   await assert.rejects(getJsapiConfig({ ...input, url: 'file:///etc/passwd' }), /网页地址格式/);
 });
+
+test('Organization directory paginates, traverses authorized departments, and strips private fields', async () => {
+  const { getDirectory, getDirectoryUsers } = await import('../feishu.mjs');
+  const calls = [];
+  const fetch = async input => {
+    const url = new URL(input);calls.push(url);
+    if (url.pathname.endsWith('/tenant_access_token/internal')) return response({code:0,tenant_access_token:'private-token',expire:7200});
+    let data;
+    if (url.pathname.endsWith('/scopes')) data = url.searchParams.has('page_token') ? {user_ids:['ou_b'],has_more:false} : {department_ids:['od-team'],has_more:true,page_token:'scope-next'};
+    else if (url.pathname.endsWith('/departments/od-team')) data = {department:{name:'研发部'}};
+    else if (url.pathname.endsWith('/departments/od-child')) data = {department:{name:'平台组'}};
+    else if (url.pathname.endsWith('/departments/od-team/children')) data = {items:[{open_department_id:'od-child'}],has_more:false};
+    else if (url.pathname.endsWith('/departments/od-child/children')) data = {items:[],has_more:false};
+    else if (url.pathname.endsWith('/users/find_by_department')) data = url.searchParams.get('department_id') === 'od-team' ? {items:[{open_id:'ou_a',name:'甲',email:'private-email',department_ids:['od-team']}],has_more:false} : {items:[{open_id:'ou_b',name:'乙',mobile:'private-phone',department_ids:['od-child']}],has_more:false};
+    else if (url.pathname.endsWith('/users/batch')) data = {items:[{open_id:'ou_b',name:'乙',email:'private-email',department_ids:['od-child']}]};
+    else assert.fail(url.pathname);
+    return response({code:0,data});
+  };
+  const options = {appId:'cli_directory',appSecret:'secret',fetch};
+  const result = await getDirectory(options);
+  assert.deepEqual(result.departments.map(d => d.name),['研发部','平台组']);
+  assert.deepEqual(result.users.map(u => [u.openId,u.name,u.department]),[['ou_a','甲','研发部'],['ou_b','乙','平台组']]);
+  assert.doesNotMatch(JSON.stringify(result),/private-/);
+  assert.equal(calls.filter(u => u.pathname.endsWith('/scopes')).length,2);
+  assert.ok(calls.filter(u => u.pathname.includes('/contact/')).every(u => u.searchParams.get('user_id_type') === 'open_id'));
+  await assert.rejects(getDirectoryUsers({...options,openIds:['not-an-open-id']}),/无效/);
+});
+
+test('Directory rejects repeated page tokens instead of returning an incomplete organization', async () => {
+  const { getDirectory } = await import('../feishu.mjs');
+  const fetch = async input => response(input.includes('/tenant_access_token/') ? {code:0,tenant_access_token:'token',expire:7200} : {code:0,data:{has_more:true,page_token:'same'}});
+  await assert.rejects(getDirectory({appId:'cli_bad_pages',appSecret:'secret',fetch}),/分页异常/);
+});

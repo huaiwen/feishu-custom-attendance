@@ -228,7 +228,7 @@ test('OAuth sessions enforce employee isolation, administrator access and logout
   }
   const workerHeaders = await login('worker');
   const visible = await (await app.request('/api/state', { headers: workerHeaders })).json();
-  assert.deepEqual(visible.session, { role: 'employee', employeeId: 'worker' });
+  assert.deepEqual(visible.session, { role: 'user', employeeId: 'worker', managedGroupIds: [] });
   assert.deepEqual(visible.employees.map(e => e.id), ['worker']);
   assert.equal(visible.employees[0].openId, undefined);
   assert.deepEqual(visible.schedules.map(s => s.employeeId), ['worker']);
@@ -248,11 +248,11 @@ test('OAuth sessions enforce employee isolation, administrator access and logout
   assert.equal((await app.request('/api/feishu/jsapi-config?url=https%3A%2F%2Fevil.example%2F', { headers: workerHeaders })).status, 403);
   const adminHeaders = await login('admin');
   const all = await (await app.request('/api/state', { headers: adminHeaders })).json();
-  assert.equal(all.session.role, 'admin');
+  assert.equal(all.session.role, 'org_admin');
   assert.equal(all.employees.length, 2);
   assert.equal(all.schedules.length, 2);
   assert.equal(all.records.length, 2);
-  assert.equal(all.employees[0].openId, 'ou_worker');
+  assert.equal(all.employees[0].bound, true);
   assert.equal((await app.request('/api/locations', { method: 'POST', data: location, headers: adminHeaders })).status, 200);
   assert.equal((await app.request('/auth/logout', { method: 'POST', headers: workerHeaders })).status, 200);
   assert.equal((await app.request('/api/state', { headers: workerHeaders })).status, 401);
@@ -267,4 +267,80 @@ test('Corrupt persistence fails closed and leaves the original file untouched', 
   await writeFile(file, '{broken');
   assert.throws(() => createAttendanceServer({ env: { PORT: '0' }, dataFile: file }), /原文件已保留/);
   assert.equal(await readFile(file, 'utf8'), '{broken');
+});
+
+test('Three roles enforce group boundaries, verified directory imports and immediate revocation', { concurrency: false }, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'daka-roles-'));
+  const file = join(directory, 'state.json');
+  const employees = ['admin','manager','worker','other'].map(id => ({ id, name:id, openId:`ou_${id}`, employeeNo:id, department:'', orgAdmin:false, groupId:id === 'other' ? 'g2' : 'g1' }));
+  const date = '2040-01-05';
+  const stored = {version:2,employees,groups:[{id:'g1',name:'一组',adminIds:['manager']},{id:'g2',name:'二组',adminIds:[]}],locations:[{...location,id:'office'}],shiftTemplates:[],
+    schedules:['worker','other'].map(id => ({id:`s-${id}`,employeeId:id,groupId:id === 'worker' ? 'g1' : 'g2',date,segments:[{start:'09:00',end:'18:00',locationId:'office'}]})),
+    records:['worker','other'].map(id => ({id:`r-${id}`,employeeId:id,employeeName:id,groupId:id === 'worker' ? 'g1' : 'g2',scheduleId:`s-${id}`,date,segmentIndex:0,kind:'in',timestamp:'2040-01-05T01:00:00Z',status:'normal',source:'feishu'}))};
+  await writeFile(file,JSON.stringify(stored));
+  const env = {PORT:'0',FEISHU_APP_ID:'cli_roles',FEISHU_APP_SECRET:'test-secret',BASE_URL:'https://attendance.example.com',ADMIN_OPEN_IDS:'ou_admin',FEISHU_TENANT_KEY:'tenant-test'};
+  const app = await start(file,env);
+  t.after(async () => {await app.close();await rm(directory,{recursive:true,force:true});});
+  const headers = {Host:'attendance.example.com',Origin:env.BASE_URL};
+  const directoryUsers = [{open_id:'ou_new',name:'来自组织的成员',email:'private@example.com',mobile:'private-phone'},...employees.map(e => ({open_id:e.openId,name:e.name}))];
+  t.mock.method(globalThis,'fetch',async (input,options) => {
+    const url = new URL(input);
+    if (url.pathname.endsWith('/authen/v2/oauth/token')) return Response.json({code:0,access_token:JSON.parse(options.body).code});
+    if (url.pathname.endsWith('/authen/v1/user_info')) return Response.json({code:0,data:{open_id:`ou_${options.headers.Authorization.slice(7)}`,name:'Test',tenant_key:'tenant-test'}});
+    if (url.pathname.endsWith('/tenant_access_token/internal')) return Response.json({code:0,tenant_access_token:'directory-token',expire:7200});
+    if (url.pathname.endsWith('/contact/v3/scopes')) return Response.json({code:0,data:{user_ids:['ou_new'],department_ids:[],has_more:false}});
+    if (url.pathname.endsWith('/users/batch')) return Response.json({code:0,data:{items:directoryUsers.filter(u => url.searchParams.getAll('user_ids').includes(u.open_id))}});
+    assert.fail(`Unexpected upstream URL ${url.pathname}`);
+  });
+  const login = async code => {
+    const initial = await app.request('/auth/login',{headers});
+    const nonce = new URL(initial.headers.get('location')).searchParams.get('state');
+    const response = await app.request(`/auth/callback?code=${code}&state=${nonce}`,{headers:{...headers,Cookie:initial.headers.get('set-cookie').split(';')[0]}});
+    assert.equal(response.status,302);
+    return {...headers,Cookie:response.headers.get('set-cookie').split(';')[0]};
+  };
+  const org = await login('admin'), manager = await login('manager'), worker = await login('worker');
+  const stateAs = async who => (await app.request('/api/state',{headers:who})).json();
+  const call = (who,path,data,method='POST') => app.request(path,{headers:who,data,method});
+  const visible = await stateAs(manager);
+  assert.equal(visible.session.role,'group_admin');
+  assert.deepEqual(visible.groups.map(g => g.id),['g1']);
+  assert.deepEqual(visible.schedules.map(s => s.employeeId),['worker']);
+  assert.deepEqual(visible.records.map(r => r.employeeId),['worker']);
+  assert.ok(visible.employees.every(e => e.openId === undefined && e.groupId === 'g1'));
+  const csv = await (await app.request('/api/records.csv',{headers:manager})).text();
+  assert.match(csv,/worker/);assert.doesNotMatch(csv,/other/);
+  const summary = await (await app.request(`/api/attendance-summary?from=${date}&to=${date}`,{headers:manager})).json();
+  assert.deepEqual(summary.rows.map(r => r.employeeId),['worker']);
+  for (const path of ['/api/groups','/api/employees/manager/access','/api/locations','/api/shift-templates']) assert.equal((await call(manager,path,{},path.includes('/access') ? 'PATCH' : 'POST')).status,403);
+  const schedule = {employeeIds:['other'],dates:['2041-01-05'],segments:[{start:'09:00',end:'18:00',locationId:'office'}]};
+  assert.equal((await call(manager,'/api/schedules',schedule)).status,403);
+  assert.equal((await call(manager,'/api/schedules/s-other',{},'DELETE')).status,403);
+  assert.equal((await call(manager,'/api/schedules',{...schedule,employeeIds:['worker']})).status,200);
+  assert.equal((await app.request('/api/directory',{headers:worker})).status,403);
+  const listed = await (await app.request('/api/directory',{headers:manager})).json();
+  assert.equal(listed.users[0].name,'来自组织的成员');
+  assert.doesNotMatch(JSON.stringify(listed),/private-|directory-token/);
+  const before = await readFile(file,'utf8');
+  assert.equal((await call(manager,'/api/employees/import',{openIds:['ou_external'],groupId:'g1'})).status,403);
+  assert.equal(await readFile(file,'utf8'),before);
+  assert.equal((await call(manager,'/api/employees/import',{openIds:['ou_new','ou_other'],groupId:'g1'})).status,403);
+  assert.equal(await readFile(file,'utf8'),before,'mixed batch must be atomic');
+  assert.equal((await call(manager,'/api/employees/import',{openIds:['ou_new'],groupId:'g2'})).status,403);
+  assert.equal((await call(manager,'/api/employees/import',{openIds:['ou_new'],groupId:'g1',orgAdmin:true,role:'org_admin',name:'Forged'})).status,200);
+  const imported = (await stateAs(org)).employees.find(e => e.name === '来自组织的成员');
+  assert.ok(imported);assert.equal(imported.role,'user');assert.equal(imported.bound,true);
+  assert.equal((await call(org,'/api/employees/import',{openIds:['ou_new'],groupId:'g1'})).status,200);
+  assert.equal((await stateAs(org)).employees.filter(e => e.id === imported.id).length,1);
+  assert.equal((await call(org,'/api/employees/admin/access',{groupId:'g1',role:'user',managedGroupIds:[]},'PATCH')).status,409);
+  assert.equal((await call(org,'/api/employees/worker/access',{groupId:'g1',role:'group_admin',managedGroupIds:[]},'PATCH')).status,400);
+  assert.equal((await call(org,'/api/employees/worker/access',{groupId:'g1',role:'group_admin',managedGroupIds:['g2']},'PATCH')).status,200);
+  assert.equal((await stateAs(worker)).session.role,'group_admin');
+  assert.deepEqual((await stateAs(worker)).session.managedGroupIds,['g2']);
+  assert.equal((await call(org,'/api/groups/g1',{name:'一组',adminIds:[]},'PATCH')).status,200);
+  assert.equal((await stateAs(manager)).session.role,'user');
+  assert.deepEqual((await stateAs(manager)).employees.map(e => e.id),['manager']);
+  assert.equal((await app.request('/api/records.csv',{headers:manager})).status,403);
+  assert.equal((await call(manager,'/api/schedules',{...schedule,employeeIds:['worker']})).status,403);
+  assert.equal((await call(org,'/api/employees',{...employee,openId:'ou_forged'})).status,403,'production bindings must come from the organization');
 });

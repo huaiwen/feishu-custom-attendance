@@ -40,26 +40,27 @@ ADMIN_OPEN_IDS=ou_REPLACE_WITH_ADMIN_OPEN_ID
 HOST=0.0.0.0
 ```
 
-`ADMIN_OPEN_IDS` 是本项目管理员名单，多个 ID 用逗号分隔。Open ID 是用户在这个应用内的标识，不能直接使用其他应用获取的 Open ID。员工首次登录后仍需绑定管理员配置的员工档案和排班；不要用姓名匹配来授权。
+`ADMIN_OPEN_IDS` 是本项目初始组织管理员名单，多个 ID 用逗号分隔。Open ID 是用户在这个应用内的标识，不能直接使用其他应用获取的 Open ID。管理员在“人员管理 → 从组织添加”中选择真实成员，自动绑定当前应用的 Open ID；不要用姓名匹配来授权。
 
 在应用“安全设置”中配置：
 
 | 配置项 | 示例值 |
 | --- | --- |
 | 重定向 URL | `https://attendance.example.com/auth/callback` |
-| H5 可信域名 | `attendance.example.com`；若使用非标准端口，同时包含实际端口，按后台校验结果确认 |
+| H5 可信域名 | `https://attendance.example.com`；使用实际 HTTPS 根地址，非标准端口也需包含在地址中 |
 
-回调地址必须与服务端 `BASE_URL` 派生出的地址完全一致；本项目回调路径为 `/auth/callback`，不要照搬其他教程的末尾斜杠。H5 可信域名对应页面实际所在主机。部署在根路径，避免前缀路径或代理改写导致 OAuth 回调、静态资源和 JSAPI 验签不一致。[重定向 URL 配置](https://open.feishu.cn/document/develop-web-apps/configure-redirect-urls)、[OAuth 授权码与回调规则](https://open.feishu.cn/document/common-capabilities/sso/api/obtain-oauth-code)、[H5 JSAPI 鉴权规则](https://open.feishu.cn/document/uYjL24iN/uEzM4YjLxMDO24SMzgjN)
+回调地址必须与服务端 `BASE_URL` 派生出的地址完全一致；本项目回调路径为 `/auth/callback`，不要照搬其他教程的末尾斜杠。2026-11-21 后台实测，H5 可信域名字段要求完整 HTTP/HTTPS URL，裸 `主机:端口` 无法保存；使用与 `BASE_URL` 相同的 HTTPS 根地址并回读确认。部署在根路径，避免前缀路径或代理改写导致 OAuth 回调、静态资源和 JSAPI 验签不一致。[重定向 URL 配置](https://open.feishu.cn/document/develop-web-apps/configure-redirect-urls)、[OAuth 授权码与回调规则](https://open.feishu.cn/document/common-capabilities/sso/api/obtain-oauth-code)、[H5 JSAPI 鉴权规则](https://open.feishu.cn/document/uYjL24iN/uEzM4YjLxMDO24SMzgjN)
 
 ## 4. 权限最小集
 
 | 能力 | 当前需要的授权 |
 | --- | --- |
 | 飞书登录与基础身份 | OAuth 用户同意和应用可用范围；获取 `open_id`、姓名、`tenant_key` 不要求额外用户信息字段权限 |
+| 从组织选择成员 | 应用身份权限 `contact:contact.base:readonly`、`contact:user.base:readonly`、`contact:department.base:readonly`，以及明确授权的部门/成员通讯录数据范围 |
 | 手机获取当前位置 | H5 JSAPI 鉴权；用户同意 `scope.userLocation`；手机系统允许飞书访问精确位置 |
 | 自定义班次、排班、地点、打卡与统计 | 存储和计算在本项目，不需要官方考勤读写权限 |
 
-当前不需要机器人、消息发送、通讯录全量读取、人脸、摄像头或 `offline_access` 权限。`scope.userLocation` 是客户端用户位置授权，不应把它当作 OAuth `scope` 字符串或考勤管理权限。定位被拒绝时应引导用户检查授权，不能绕过拒绝继续打卡。[用户信息字段权限](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/authen-v1/user_info/get)、[客户端 API 权限](https://open.feishu.cn/document/uYjL24iN/uITMuITMuITM)
+不申请手机号、邮箱、通讯录写入、消息发送、人脸、摄像头或 `offline_access` 权限。通讯录数据范围与应用可用范围是两项独立配置；按部署需要选择部门或全部成员，变更权限后发布新版本。`scope.userLocation` 是客户端用户位置授权，不应把它当作 OAuth `scope` 字符串或考勤管理权限。定位被拒绝时应引导用户检查授权，不能绕过拒绝继续打卡。[用户信息字段权限](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/authen-v1/user_info/get)、[客户端 API 权限](https://open.feishu.cn/document/uYjL24iN/uITMuITMuITM)
 
 如果将来选择同步官方考勤，才按实际需求申请 `attendance:task`；若同步官方排班，还需要 `attendance:rule`，读取官方结果则需要对应只读权限及考勤侧数据范围。届时还要维护本应用 Open ID 与官方所需员工 ID/工号的映射，不能直接把 Open ID 填进 `employee_id`。这些都是可选同步的配置，不是独立版本发布条件。[流水导入接口](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/attendance-v1/user_flow/batch_create)、[排班接口](https://open.feishu.cn/document/server-docs/attendance-v1/user_daily_shift/batch_create)
 
@@ -83,14 +84,14 @@ HOST=0.0.0.0
 - 班次模板正确生成个人排班；已保存记录的规则快照不随模板编辑改写。
 - 统计使用本应用规则，未到打卡截止时间的节点不记为缺卡；截止后未打卡节点应能计入缺卡，并与明细核对。
 - 在范围内、范围外、围栏边缘分别验证；拒绝定位、定位超时、定位误差过大时不能记为成功。
-- 为每个地点选择与坐标来源一致的坐标系：`wgs84` 或 `gcj02`，默认 `wgs84`。普通浏览器定位使用 WGS84，飞书定位以 `tt.getLocation` 实际返回的 `type` 为准；检查两种相同坐标系的定位均能使用，坐标系不一致或定位缺失坐标系时应拒绝打卡。
+- 为每个地点选择与坐标来源一致的坐标系：`wgs84` 或 `gcj02`，默认 `wgs84`。普通浏览器定位使用 WGS84，飞书定位以 `tt.getLocation` 实际返回的 `type` 为准；检查两种相同坐标系的定位均能使用，已知坐标系不同但代表同一地点时应通过转换校验；定位缺失坐标系时应拒绝打卡。
 - 退出后重登、换设备、重复点击打卡、刷新页面后检查身份与数据是否正确。
 
 ## 7. 当前限制
 
 100 米表示围绕指定经纬度的平面地理范围，不识别楼层，不保证员工位于楼内。定位结果会受到设备、室内环境和系统授权精度影响；`accuracy: 'best'` 只是期望约 20 米精度，不构成精度保证。`getLocation` 支持移动端网页应用，不支持 PC，手机端必须授予定位权限。[getLocation 文档](https://open.feishu.cn/document/uYjL24iN/uUTOz4SN5MjL1kzM)
 
-地点支持 WGS84 和 GCJ-02，但同一次校验的地点坐标与定位结果必须使用同一坐标系；本项目不做隐式转换或近似转换。请按地图数据的实际来源设置地点，不要仅更改坐标系标签来消除提示。若浏览器返回 WGS84、目标地点配置为 GCJ-02，需要使用能提供匹配坐标系的定位来源，或由管理员取得正确坐标后更新地点。
+管理员可以在地图上点击选取中心、调整半径，或手动录入实际坐标。底图使用 OpenStreetMap，地图上的坐标为 WGS84；切换保存坐标系时使用固定版本 gcoord 转换。服务端以手机实际返回的坐标系转换后校验距离，记录同时保留定位坐标系和中心坐标系。未知或缺失坐标系仍拒绝。地图标注误差和转换不能替代实际手机的现场校准。
 
 打卡只校验打卡时刻的位置，不能证明某人全天持续在岗。浏览器或客户端提交的坐标也不构成不可伪造的硬件证明。当前未实现跨日班次、请假/加班审批、补卡审批、假期余额、薪资结算及 Wi-Fi/人脸防作弊；这些功能有独立的开发与验收范围，不能仅靠调用登录或流水 API 获得。
 
@@ -105,6 +106,18 @@ HOST=0.0.0.0
 - JSAPI 票据：`POST https://open.feishu.cn/open-apis/jssdk/ticket/get`，读取 `data.ticket` 与 `data.expire_in`；服务端缓存并在过期前刷新。[文档](https://open.feishu.cn/document/ukTMukTMukTM/uYTM5UjL2ETO14iNxkTN/h5_js_sdk/authorization)
 - JSSDK：`https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.48.js`。[官方 SDK 引入说明](https://open.feishu.cn/document/client-docs/h5/introduction)
 
-已登录的前端通过 `GET /api/feishu/jsapi-config?url=...` 获取 JSAPI 配置，`url` 使用 `encodeURIComponent(location.href.split('#')[0])`。服务端仅为 `BASE_URL` 同源页面签名。前端把配置交给 `h5sdk.config`，同时等待 `h5sdk.ready` 和 `config.onSuccess` 后才调用 `tt.getLocation({ timeout: 15, cacheTimeout: 0, accuracy: 'best', success, fail })`；鉴权失败或超时会停止定位并允许重试。前端保留实际返回的坐标系 `type`，后端强制检查它与地点的 `coordinateSystem` 相同；允许 `wgs84` 或 `gcj02`，不允许缺失或混用。地图坐标系选择由管理员显式配置，默认 WGS84。
+已登录的前端通过 `GET /api/feishu/jsapi-config?url=...` 获取 JSAPI 配置，`url` 使用 `encodeURIComponent(location.href.split('#')[0])`。服务端仅为 `BASE_URL` 同源页面签名。前端把配置交给 `h5sdk.config`，同时等待 `h5sdk.ready` 和 `config.onSuccess` 后才调用 `tt.getLocation({ timeout: 15, cacheTimeout: 0, accuracy: 'best', success, fail })`；鉴权失败或超时会停止定位并允许重试。前端保留实际返回的坐标系 `type`，后端仅接受 `wgs84` 或 `gcj02`，按实际坐标系转换后计算距离，不允许缺失或误标。地图选点默认保存 WGS84。
 
 本地测试覆盖 API 请求字段、错误脱敏、凭证过期、并发刷新与签名计算；它不等于真实飞书租户、真实手机或现场定位验收。
+
+## 角色与组织选择
+
+- 普通用户：个人打卡、排班、记录和统计。
+- 考勤组管理员：负责组的成员、排班、记录、统计和导出；不能修改其他组或授予角色。
+- 组织管理员：全部考勤组、人员角色、公共地点和班次设置。这里的组织管理员是本应用内的角色，不会自动授予飞书企业管理后台权限。
+
+人员目录只展示应用已获授权的部门及成员；通过服务端重新读取目录核验所选身份后保存。读取基本信息只保留姓名、身份标识和部门，不把上游手机、邮箱等字段交给前端。当前通过部门/成员数据范围组织目录；若仅以飞书用户组授权，请将相应部门或成员加入范围。工号未提供时显示为空，不伪造正式工号。
+
+成员转组不改写历史排班和打卡归属。初始组织管理员由 `ADMIN_OPEN_IDS` 保留；其他角色由组织管理员在成员考勤设置中指定，组管理员也可在考勤组设置中指定。
+
+接口依据：[通讯录授权范围](https://open.feishu.cn/document/server-docs/contact-v3/scope/list)、[部门直属成员](https://open.feishu.cn/document/server-docs/contact-v3/user/find_by_department)、[批量用户](https://open.feishu.cn/document/server-docs/contact-v3/user/batch)、[子部门列表](https://open.feishu.cn/document/server-docs/contact-v3/department/children)。

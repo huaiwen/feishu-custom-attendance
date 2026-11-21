@@ -4,8 +4,9 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DomainError, validateEmployee, validateLocation, validateScheduleBatch, evaluatePunch, clockParts } from './domain.mjs';
-import { exchangeCode, getJsapiConfig } from './feishu.mjs';
+import { exchangeCode, getJsapiConfig, getDirectory } from './feishu.mjs';
 import { validateShiftTemplate, attendanceSummary } from './schedule-tools.mjs';
+import { sessionFor, managesGroup, requireGroup, visibleState, validateGroup, migrateGroups } from './access.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const ZONE = 'Asia/Shanghai';
@@ -69,13 +70,16 @@ function persist(file, state) {
 function readState(file, mode) {
   try {
     const state = JSON.parse(readFileSync(file, 'utf8'));
-    if (state.version !== 1 || !['employees', 'locations', 'schedules', 'records'].every(key => Array.isArray(state[key]))) throw new Error('数据结构或版本不正确');
+    if (![1, 2].includes(state.version) || !['employees', 'locations', 'schedules', 'records'].every(key => Array.isArray(state[key]))) throw new Error('数据结构或版本不正确');
     if (state.shiftTemplates !== undefined && !Array.isArray(state.shiftTemplates)) throw new Error('班次模板数据结构不正确');
     state.shiftTemplates ??= [];
+    const previousVersion = state.version;
+    migrateGroups(state);
+    if (previousVersion !== state.version) persist(file, state);
     return state;
   } catch (error) {
     if (error.code !== 'ENOENT') throw new Error(`读取考勤数据失败，原文件已保留：${error.message}`);
-    const state = initialState(mode);
+    const state = migrateGroups(initialState(mode));
     persist(file, state);
     return state;
   }
@@ -125,10 +129,10 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
     const redirect = url => { res.writeHead(302, { Location: url }); res.end(); };
     const setCookie = (name, value, seconds) => res.setHeader('Set-Cookie', `${name}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${seconds}${config.mode === 'feishu' ? '; Secure' : ''}`);
     res.setHeader('X-Content-Type-Options', 'nosniff');
-    res.setHeader('Referrer-Policy', 'no-referrer');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Cache-Control', 'no-store');
     res.setHeader('Permissions-Policy', 'geolocation=(self)');
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://lf-scm-cn.feishucdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.feishu.cn https://*.larksuite.com");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://lf-scm-cn.feishucdn.com; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://tile.openstreetmap.org; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self' https://*.feishu.cn https://*.larksuite.com");
     try {
       const allowedHosts = config.mode === 'demo' ? [`127.0.0.1:${server.address().port}`, `localhost:${server.address().port}`] : [new URL(config.baseUrl).host];
       if (!allowedHosts.includes(req.headers.host)) throw new DomainError('无效的访问域名', 403);
@@ -137,11 +141,14 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       const now = Date.now();
       for (const [id, session] of sessions) if (session.expires < now) sessions.delete(id);
       for (const [id, pending] of oauthStates) if (pending.expires < now) oauthStates.delete(id);
-      const auth = config.mode === 'demo' ? { role: 'admin', employeeId: null } : sessions.get(cookie(req, 'attendance_session'));
+      const auth = config.mode === 'demo' ? {} : sessions.get(cookie(req, 'attendance_session'));
       // Resolve employee bindings on every request so account changes take effect immediately.
-      const session = auth && config.mode === 'feishu' ? { role: config.adminOpenIds.includes(auth.openId) ? 'admin' : 'employee', employeeId: state.employees.find(e => e.openId === auth.openId)?.id || null, openId: auth.openId } : auth;
+      const currentSession = () => auth && sessionFor(state, auth.openId, config.adminOpenIds, config.mode === 'demo');
+      const session = currentSession();
       const requireAuth = () => { if (!session) throw new DomainError('请先使用飞书登录', 401); };
-      const requireAdmin = () => { requireAuth(); if (session.role !== 'admin') throw new DomainError('此操作需要考勤管理员权限', 403); };
+      const requireAdmin = () => { requireAuth(); if (currentSession().role !== 'org_admin') throw new DomainError('此操作需要组织管理员权限', 403); };
+      const requireManager = () => { requireAuth(); if (currentSession().role === 'user') throw new DomainError('此操作需要考勤组管理员权限', 403); };
+      const scopedState = () => visibleState(state, currentSession(), config.adminOpenIds);
       if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== origin) throw new DomainError('请求来源校验失败，请从应用页面重试', 403);
 
       if (url.pathname === '/auth/login' && req.method === 'GET') {
@@ -166,7 +173,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         try { identity = await exchangeCode({ appId: config.appId, appSecret: config.appSecret, redirectUri: `${config.baseUrl}/auth/callback`, code }); }
         catch { throw new DomainError('飞书登录失败，请检查应用配置、回调地址或重新授权', 502); }
         if (config.tenantKey && identity.tenantKey !== config.tenantKey) throw new DomainError('此账号不属于配置的企业', 403);
-        if (!config.adminOpenIds.includes(identity.openId) && !state.employees.some(e => e.openId === identity.openId)) throw new DomainError(`尚未添加到考勤人员，请将 Open ID ${identity.openId} 交给管理员绑定`, 403);
+        if (!config.adminOpenIds.includes(identity.openId) && !state.employees.some(e => e.openId === identity.openId)) throw new DomainError('尚未加入考勤，请联系管理员从飞书组织中添加你', 403);
         const id = randomBytes(32).toString('hex');
         sessions.set(id, { openId: identity.openId, expires: now + SESSION_MS });
         setCookie('attendance_session', id, SESSION_MS / 1000);
@@ -179,13 +186,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       }
       if (url.pathname === '/api/state' && req.method === 'GET') {
         requireAuth();
-        const admin = session.role === 'admin';
-        const visible = { ...state,
-          shiftTemplates: admin ? state.shiftTemplates : [],
-          employees: state.employees.filter(e => admin || e.id === session.employeeId).map(e => admin ? e : { id: e.id, name: e.name, department: e.department, employeeNo: e.employeeNo }),
-          schedules: state.schedules.filter(s => admin || s.employeeId === session.employeeId),
-          records: state.records.filter(r => admin || r.employeeId === session.employeeId) };
-        return json(200, { ...visible, mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session: { role: session.role, employeeId: session.employeeId }, integration: { configured: config.mode === 'feishu', appId: config.appId || null } });
+        return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session, integration: { configured: config.mode === 'feishu', appId: config.appId || null } });
       }
       if (url.pathname === '/api/feishu/jsapi-config' && req.method === 'GET') {
         requireAuth();
@@ -200,16 +201,13 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireAuth();
         const from = url.searchParams.get('from') || clockParts().date;
         const to = url.searchParams.get('to') || from;
-        const ownState = session.role === 'admin' ? state : { ...state,
-          employees: state.employees.filter(e => e.id === session.employeeId),
-          schedules: state.schedules.filter(s => s.employeeId === session.employeeId),
-          records: state.records.filter(r => r.employeeId === session.employeeId) };
-        return json(200, attendanceSummary(ownState, { from, to }));
+        return json(200, attendanceSummary(scopedState(), { from, to }));
       }
       const templateMatch = url.pathname.match(/^\/api\/shift-templates(?:\/([^/]+))?$/);
       if (templateMatch && ((req.method === 'POST' && !templateMatch[1]) || (req.method === 'PATCH' && templateMatch[1]))) {
         requireAdmin();
         const input = validateShiftTemplate(await readBody(req));
+        requireAdmin();
         const id = templateMatch[1] || randomUUID();
         if (req.method === 'PATCH' && !state.shiftTemplates.some(t => t.id === id)) throw new DomainError('班次模板不存在', 404);
         if (state.shiftTemplates.some(t => t.id !== id && t.name === input.name)) throw new DomainError('班次名称已存在', 409);
@@ -224,20 +222,92 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         return json(200, { ok: true });
       }
       if (url.pathname === '/api/records.csv' && req.method === 'GET') {
-        requireAdmin();
+        requireManager();
         const rows = [['姓名', '工号', '日期', '时段', '类型', '打卡时间（北京时间）', '地点', '距中心(米)', '精度(米)', '状态', '来源']];
-        for (const r of state.records) rows.push([r.employeeName, r.employeeNo, r.date, `${r.scheduledStart}–${r.scheduledEnd}`, r.kind === 'in' ? '上班' : '下班', new Date(r.timestamp).toLocaleString('sv-SE', { timeZone: ZONE }), r.locationName, r.distance, r.accuracy, { normal: '正常', late: '迟到', early: '早退' }[r.status], r.source === 'demo' ? '演示记录' : '飞书']);
+        for (const r of scopedState().records) rows.push([r.employeeName, r.employeeNo, r.date, `${r.scheduledStart}–${r.scheduledEnd}`, r.kind === 'in' ? '上班' : '下班', new Date(r.timestamp).toLocaleString('sv-SE', { timeZone: ZONE }), r.locationName, r.distance, r.accuracy, { normal: '正常', late: '迟到', early: '早退' }[r.status], r.source === 'demo' ? '演示记录' : '飞书']);
         res.writeHead(200, { 'Content-Type': 'text/csv; charset=utf-8', 'Content-Disposition': `attachment; filename="attendance-${clockParts().date}.csv"` });
         return res.end('\ufeff' + rows.map(row => row.map(csvCell).join(',')).join('\r\n'));
+      }
+      const groupMatch = url.pathname.match(/^\/api\/groups(?:\/([^/]+))?$/);
+      if (groupMatch && ((req.method === 'POST' && !groupMatch[1]) || (req.method === 'PATCH' && groupMatch[1]))) {
+        requireAdmin();
+        const input = validateGroup(await readBody(req), state);
+        requireAdmin();
+        const id = groupMatch[1] || randomUUID();
+        if (req.method === 'PATCH' && !state.groups.some(g => g.id === id)) throw new DomainError('考勤组不存在', 404);
+        if (state.groups.some(g => g.id !== id && g.name === input.name)) throw new DomainError('考勤组名称已存在', 409);
+        const group = { id, ...input };
+        commit(next => { next.groups = [...next.groups.filter(g => g.id !== id), group]; });
+        return json(200, { group });
+      }
+      if (url.pathname === '/api/directory' && req.method === 'GET') {
+        requireManager();
+        if (config.mode !== 'feishu') return json(200, { departments: [], users: state.employees.map(e => ({ openId: e.id, name: e.name, department: e.department })), demo: true });
+        try {
+          const directory = await getDirectory(config);
+          requireManager();
+          return json(200, directory);
+        } catch (error) {
+          if (error instanceof DomainError) throw error;
+          throw new DomainError(`无法读取飞书组织：${error.message}`, 502);
+        }
+      }
+      if (url.pathname === '/api/employees/import' && req.method === 'POST') {
+        requireManager();
+        const input = await readBody(req);
+        requireGroup(currentSession(), input.groupId, state);
+        if (!Array.isArray(input.openIds) || !input.openIds.length || input.openIds.length > 50 ||
+            new Set(input.openIds).size !== input.openIds.length || input.openIds.some(id => typeof id !== 'string' || !/^ou_[a-zA-Z0-9]+$/.test(id))) throw new DomainError('请从飞书组织中选择 1 至 50 位成员');
+        let users;
+        try { users = (await getDirectory(config)).users.filter(user => input.openIds.includes(user.openId)); }
+        catch (error) { throw new DomainError(`添加失败：${error.message}`, 502); }
+        // Recheck authority after the external lookup; role changes take effect immediately.
+        requireManager();
+        requireGroup(currentSession(), input.groupId, state);
+        if (users.length !== input.openIds.length) throw new DomainError('部分成员不在应用的通讯录授权范围内，请刷新后重试', 403);
+        commit(next => {
+          for (const user of users) {
+            let employee = next.employees.find(e => e.openId === user.openId);
+            if (employee && !managesGroup(currentSession(), employee.groupId)) throw new DomainError('不能移动其他考勤组的成员，请联系组织管理员', 403);
+            if (!employee) {
+              employee = { id: randomUUID(), employeeNo: '', openId: user.openId, orgAdmin: false };
+              next.employees.push(employee);
+            }
+            Object.assign(employee, { name: user.name, department: user.department, groupId: input.groupId });
+          }
+        });
+        return json(200, { count: users.length });
+      }
+      const accessMatch = url.pathname.match(/^\/api\/employees\/([^/]+)\/access$/);
+      if (accessMatch && req.method === 'PATCH') {
+        requireAdmin();
+        const input = await readBody(req);
+        requireAdmin();
+        const employee = state.employees.find(e => e.id === accessMatch[1]);
+        if (!employee) throw new DomainError('员工不存在', 404);
+        requireGroup(currentSession(), input.groupId, state);
+        if (!['user', 'group_admin', 'org_admin'].includes(input.role)) throw new DomainError('请选择有效的角色');
+        if (!Array.isArray(input.managedGroupIds) || new Set(input.managedGroupIds).size !== input.managedGroupIds.length || input.managedGroupIds.some(id => !state.groups.some(g => g.id === id)) || (input.role === 'group_admin' && !input.managedGroupIds.length)) throw new DomainError('考勤组管理员须选择至少一个负责的组');
+        if (config.adminOpenIds.includes(employee.openId) && input.role !== 'org_admin') throw new DomainError('初始组织管理员由服务器配置保留，不能在此撤销', 409);
+        commit(next => {
+          Object.assign(next.employees.find(e => e.id === employee.id), { groupId: input.groupId, orgAdmin: input.role === 'org_admin' });
+          for (const group of next.groups) {
+            group.adminIds = group.adminIds.filter(id => id !== employee.id);
+            if (input.role === 'group_admin' && input.managedGroupIds.includes(group.id)) group.adminIds.push(employee.id);
+          }
+        });
+        return json(200, { ok: true });
       }
       const employeeMatch = url.pathname.match(/^\/api\/employees(?:\/([^/]+))?$/);
       if (employeeMatch && ['POST', 'PATCH'].includes(req.method)) {
         requireAdmin();
+        if (config.mode === 'feishu') throw new DomainError('请从飞书组织选择成员；已绑定身份不能手动改写', 403);
         const input = validateEmployee(await readBody(req));
+        requireAdmin();
         const id = req.method === 'PATCH' ? employeeMatch[1] : randomUUID();
         if (req.method === 'PATCH' && !state.employees.some(e => e.id === id)) throw new DomainError('员工不存在', 404);
         if (state.employees.some(e => e.id !== id && (e.employeeNo === input.employeeNo || (input.openId && e.openId === input.openId)))) throw new DomainError('工号或飞书 Open ID 已被其他员工使用', 409);
-        const employee = { id, ...input };
+        const employee = { ...state.employees.find(e => e.id === id), id, groupId: state.employees.find(e => e.id === id)?.groupId || state.groups[0].id, ...input };
         commit(next => { next.employees = [...next.employees.filter(e => e.id !== id), employee]; });
         return json(200, { employee });
       }
@@ -245,6 +315,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       if (locationMatch && ['POST', 'PATCH'].includes(req.method)) {
         requireAdmin();
         const input = validateLocation(await readBody(req));
+        requireAdmin();
         const id = req.method === 'PATCH' ? locationMatch[1] : randomUUID();
         if (req.method === 'PATCH' && !state.locations.some(l => l.id === id)) throw new DomainError('地点不存在', 404);
         const location = { id, ...input };
@@ -252,23 +323,27 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         return json(200, { location });
       }
       if (url.pathname === '/api/schedules' && req.method === 'POST') {
-        requireAdmin();
+        requireManager();
         const input = validateScheduleBatch(await readBody(req), state);
+        for (const employeeId of input.employeeIds) requireGroup(currentSession(), state.employees.find(e => e.id === employeeId).groupId, state);
         const existing = state.schedules.filter(s => input.employeeIds.includes(s.employeeId) && input.dates.includes(s.date));
+        for (const schedule of existing) requireGroup(currentSession(), schedule.groupId, state);
         if (existing.length && !input.overwrite) throw new DomainError(`有 ${existing.length} 条已有排班，请确认覆盖后重试`, 409);
         if (existing.some(s => state.records.some(r => r.scheduleId === s.id))) throw new DomainError('所选排班已有打卡记录，不能覆盖；请选择其他日期', 409);
         commit(next => {
           const ids = new Set(existing.map(s => s.id));
           next.schedules = next.schedules.filter(s => !ids.has(s.id));
-          for (const employeeId of input.employeeIds) for (const date of input.dates) next.schedules.push({ id: randomUUID(), employeeId, date, segments: input.segments, note: input.note });
+          for (const employeeId of input.employeeIds) for (const date of input.dates) next.schedules.push({ id: randomUUID(), employeeId, groupId: next.employees.find(e => e.id === employeeId).groupId, date, segments: input.segments, note: input.note });
         });
         return json(200, { count: input.employeeIds.length * input.dates.length });
       }
       const scheduleMatch = url.pathname.match(/^\/api\/schedules\/([^/]+)$/);
       if (scheduleMatch && req.method === 'DELETE') {
-        requireAdmin();
+        requireManager();
         const id = scheduleMatch[1];
-        if (!state.schedules.some(s => s.id === id)) throw new DomainError('排班不存在', 404);
+        const schedule = state.schedules.find(s => s.id === id);
+        if (!schedule) throw new DomainError('排班不存在', 404);
+        requireGroup(currentSession(), schedule.groupId, state);
         if (state.records.some(r => r.scheduleId === id)) throw new DomainError('已有打卡记录，不能删除该排班', 409);
         commit(next => { next.schedules = next.schedules.filter(s => s.id !== id); });
         return json(200, { ok: true });
@@ -285,14 +360,16 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const employee = state.employees.find(e => e.id === draft.employeeId);
         const location = state.locations.find(l => l.id === draft.locationId);
         const segment = state.schedules.find(s => s.id === draft.scheduleId).segments[draft.segmentIndex];
-        const record = { ...draft, id: randomUUID(), source: config.mode, employeeNo: employee.employeeNo,
+        const record = { ...draft, id: randomUUID(), groupId: state.schedules.find(s => s.id === draft.scheduleId).groupId, source: config.mode, employeeNo: employee.employeeNo,
           latitude: input.latitude, longitude: input.longitude, locatedAt: input.locatedAt,
-          radius: location.radius, coordinateSystem: location.coordinateSystem || 'wgs84', centerLatitude: location.latitude, centerLongitude: location.longitude, scheduledStart: segment.start, scheduledEnd: segment.end };
+          radius: location.radius, coordinateSystem: input.coordinateSystem, centerCoordinateSystem: location.coordinateSystem || 'wgs84', centerLatitude: location.latitude, centerLongitude: location.longitude, scheduledStart: segment.start, scheduledEnd: segment.end };
         if (!preview) commit(next => { next.records.push(record); });
         return json(200, { preview, record });
       }
       if (url.pathname.startsWith('/api/')) throw new DomainError('接口不存在', 404);
       const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'] };
+      for (const path of ['location-map.mjs', 'vendor/gcoord.mjs', 'vendor/leaflet.js']) files[`/${path}`] = [path, 'text/javascript'];
+      files['/vendor/leaflet.css'] = ['vendor/leaflet.css', 'text/css'];
       const asset = files[url.pathname];
       if (!asset || !['GET', 'HEAD'].includes(req.method)) throw new DomainError('页面不存在', 404);
       res.writeHead(200, { 'Content-Type': `${asset[1]}; charset=utf-8` });

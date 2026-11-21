@@ -52,11 +52,11 @@ test('D 楼栋 100 米范围包含定位误差，边界按未四舍五入的距�
   assert.ok(Math.abs(distanceMeters(0, 0, 0, 180) - Math.PI * 6371000) < 0.001);
 });
 
-test('GCJ-02 同系可打卡，混用 WGS84 或未知坐标系必须拒绝', () => {
+test('已知坐标系按实际位置转换，错误标注和未知坐标系必须拒绝', () => {
   const gcjState = { ...state, locations: state.locations.map(location => ({ ...location, coordinateSystem: 'gcj02' })) };
   assert.equal(evaluatePunch(gcjState, input('A', '09:00', 0, { coordinateSystem: 'gcj02' }), at('09:00')).status, 'normal');
-  assert.throws(() => evaluatePunch(gcjState, input(), at('09:00')), /定位与地点坐标系不一致/);
-  assert.throws(() => evaluatePunch(state, input('A', '09:00', 0, { coordinateSystem: 'gcj02' }), at('09:00')), /定位与地点坐标系不一致/);
+  assert.throws(() => evaluatePunch(gcjState, input(), at('09:00')), /有效打卡范围/);
+  assert.throws(() => evaluatePunch(state, input('A', '09:00', 0, { coordinateSystem: 'gcj02' }), at('09:00')), /有效打卡范围/);
   assert.throws(() => evaluatePunch(state, input('A', '09:00', 0, { coordinateSystem: 'bd09' }), at('09:00')), /定位坐标系必须/);
   for (const coordinateSystem of [undefined, null, '']) {
     assert.throws(() => evaluatePunch(state, input('A', '09:00', 0, { coordinateSystem }), at('09:00')), /定位坐标系必须明确/);
@@ -139,4 +139,15 @@ test('人员地点字段校验、白名单与上海时区', () => {
   assert.deepEqual(validateEmployee({ name: ' 员工 A ', employeeNo: '001', role: 'admin' }), { name: '员工 A', employeeNo: '001', department: '', openId: '' });
   assert.throws(() => validateEmployee({ name: 'A', employeeNo: '' }), /工号/);
   assert.deepEqual(clockParts(new Date('2026-11-23T16:00:00Z')), { date: '2026-11-24', minutes: 0 });
+});
+
+// Independent reference example from gcoord's public API documentation.
+test('GCJ-02 position matches a WGS84 map center after conversion, with the 100m boundary preserved', () => {
+  const mapped = structuredClone(state);
+  const place = mapped.locations.find(l => l.id === 'a');
+  Object.assign(place, {latitude:44.99804071,longitude:122.99395597,radius:100,coordinateSystem:'wgs84'});
+  const punch = input('A','09:00',0,{latitude:45,longitude:123,coordinateSystem:'gcj02'});
+  const record = evaluatePunch(mapped,punch,at('09:00'));
+  assert.ok(record.distance < 1);
+  assert.throws(() => evaluatePunch(mapped,{...punch,longitude:123.01},at('09:00')), /有效打卡范围/);
 });

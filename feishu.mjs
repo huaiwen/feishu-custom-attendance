@@ -93,3 +93,85 @@ export async function getJsapiConfig({ appId, appSecret, url, fetch = globalThis
   const signature = createHash('sha1').update(`jsapi_ticket=${cache.ticket.value}&noncestr=${nonceStr}&timestamp=${timestamp}&url=${url.split('#')[0]}`).digest('hex');
   return { appId, timestamp, nonceStr, signature, jsApiList: ['getLocation', 'requestAccess'] };
 }
+
+async function directoryClient({ appId, appSecret, fetch = globalThis.fetch }) {
+  checkCredentials(appId, appSecret);
+  const key = `directory:${appId}:${createHash('sha256').update(appSecret).digest('hex')}`;
+  let token = credentialsCache.get(key);
+  if (!token || token.expiresAt <= Date.now()) {
+    const obtainedAt = Date.now();
+    const data = await request(fetch, `${openApi}/auth/v3/tenant_access_token/internal`, json({ app_id: appId, app_secret: appSecret }), '获取组织读取凭证');
+    token = cachedCredential(data.tenant_access_token, data.expire, obtainedAt);
+    credentialsCache.set(key, token);
+  }
+  return async (path, params = []) => {
+    const query = new URLSearchParams([['user_id_type', 'open_id'], ['department_id_type', 'open_department_id'], ...params]);
+    const data = await request(fetch, `${openApi}/contact/v3/${path}?${query}`, { headers: { Authorization: `Bearer ${token.value}` } }, '读取组织通讯录');
+    if (!data.data || typeof data.data !== 'object') throw new Error('组织通讯录响应不完整');
+    return data.data;
+  };
+}
+
+function directoryUser(user, departments = new Map()) {
+  if (typeof user?.open_id !== 'string' || !/^ou_[a-zA-Z0-9]+$/.test(user.open_id) || typeof user.name !== 'string' || !user.name.trim()) throw new Error('人员姓名或身份不完整，请开通“获取用户基本信息”权限');
+  return { openId: user.open_id, name: user.name, departmentIds: user.department_ids || [],
+    department: (user.department_ids || []).map(id => departments.get(id)).filter(Boolean).join(' / ') };
+}
+
+export async function getDirectoryUsers(options) {
+  const { openIds } = options;
+  if (!Array.isArray(openIds) || !openIds.length || openIds.length > 50 || openIds.some(id => typeof id !== 'string' || !/^ou_[a-zA-Z0-9]+$/.test(id))) throw new Error('无效的组织人员选择');
+  const get = await directoryClient(options);
+  const data = await get('users/batch', openIds.map(id => ['user_ids', id]));
+  if (!Array.isArray(data.items)) throw new Error('组织人员响应不完整');
+  const users = data.items.filter(u => !u.status?.is_resigned && !u.status?.is_exited && !u.status?.is_frozen).map(u => directoryUser(u));
+  if (users.some(u => !openIds.includes(u.openId)) || new Set(users.map(u => u.openId)).size !== users.length) throw new Error('组织人员响应不匹配');
+  return users;
+}
+
+export async function getDirectory(options) {
+  const get = await directoryClient(options);
+  const departments = new Map(), users = new Map(), directIds = new Set(), pendingDepartments = new Set();
+  const pages = async (path, params, visit) => {
+    let token = '';
+    const seen = new Set();
+    do {
+      const data = await get(path, [...params, ['page_size', '50'], ...(token ? [['page_token', token]] : [])]);
+      visit(data);
+      if (!data.has_more) break;
+      if (typeof data.page_token !== 'string' || !data.page_token || seen.has(data.page_token) || seen.size >= 200) throw new Error('组织分页异常，请缩小通讯录授权范围后重试');
+      token = data.page_token; seen.add(token);
+    } while (token);
+  };
+  let groupScopes = false;
+  await pages('scopes', [], data => {
+    for (const id of data.user_ids || []) directIds.add(id);
+    for (const id of data.department_ids || []) pendingDepartments.add(id);
+    groupScopes ||= Boolean(data.group_ids?.length);
+  });
+  for (const id of pendingDepartments) {
+    if (departments.has(id)) continue;
+    if (departments.size >= 1000) throw new Error('组织部门数量过多，请缩小通讯录授权范围');
+    const data = await get(`departments/${encodeURIComponent(id)}`);
+    if (!data.department?.name) throw new Error('部门名称缺失，请开通“获取部门基础信息”权限');
+    departments.set(id, data.department.name);
+    await pages(`departments/${encodeURIComponent(id)}/children`, [['fetch_child', 'false']], page => {
+      for (const department of page.items || []) pendingDepartments.add(department.open_department_id);
+    });
+    await pages('users/find_by_department', [['department_id', id]], page => {
+      for (const user of page.items || []) {
+        if (user.status?.is_resigned || user.status?.is_exited || user.status?.is_frozen) continue;
+        const normalized = directoryUser(user);
+        const existing = users.get(normalized.openId);
+        users.set(normalized.openId, { ...normalized, departmentIds: [...new Set([...(existing?.departmentIds || []), ...normalized.departmentIds, id])] });
+      }
+    });
+  }
+  const ids = [...directIds];
+  for (let i = 0; i < ids.length; i += 50) {
+    for (const user of await getDirectoryUsers({ ...options, openIds: ids.slice(i, i + 50) })) if (!users.has(user.openId)) users.set(user.openId, user);
+  }
+  return { departments: [...departments].map(([id, name]) => ({ id, name })),
+    users: [...users.values()].map(user => ({ ...user, department: user.departmentIds.map(id => departments.get(id)).filter(Boolean).join(' / ') })),
+    notice: groupScopes ? '当前显示按部门和成员授权的人员；若缺少成员，请组织管理员将对应部门加入应用通讯录范围。' : '' };
+}

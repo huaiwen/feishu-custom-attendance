@@ -1,3 +1,5 @@
+import gcoord from './public/vendor/gcoord.mjs';
+
 export class DomainError extends Error {
   constructor(message, status = 400) {
     super(message);
@@ -131,7 +133,8 @@ export function evaluatePunch(state, input, now = new Date()) {
   requireValue(location, '排班地点已不存在，请联系管理员');
   const coordinateSystem = input.coordinateSystem;
   requireValue(coordinateSystem === 'wgs84' || coordinateSystem === 'gcj02', '定位坐标系必须明确为 wgs84 或 gcj02，请重新获取位置');
-  requireValue(coordinateSystem === (location.coordinateSystem || 'wgs84'), '定位与地点坐标系不一致，请管理员核对地点坐标系');
+  const centerSystem = location.coordinateSystem || 'wgs84';
+  requireValue(centerSystem === 'wgs84' || centerSystem === 'gcj02', '地点坐标系无效，请联系管理员');
   const start = timeMinutes(segment.start);
   const end = timeMinutes(segment.end);
   const inWindow = input.kind === 'in'
@@ -145,7 +148,8 @@ export function evaluatePunch(state, input, now = new Date()) {
   const locatedAt = new Date(input.locatedAt).getTime();
   requireValue(Number.isFinite(locatedAt) && now.getTime() - locatedAt <= 120000 && locatedAt - now.getTime() <= 10000, '定位已过期或时间异常，请重新获取位置');
   requireValue(accuracy <= Math.min(location.radius, 100), `定位精度不足，请在开阔处重试（需优于 ${Math.min(location.radius, 100)} 米）`);
-  const distance = distanceMeters(latitude, longitude, location.latitude, location.longitude);
+  const [longitudeAtCenterSystem, latitudeAtCenterSystem] = gcoord.transform([longitude, latitude], coordinateSystem === 'gcj02' ? gcoord.GCJ02 : gcoord.WGS84, centerSystem === 'gcj02' ? gcoord.GCJ02 : gcoord.WGS84);
+  const distance = distanceMeters(latitudeAtCenterSystem, longitudeAtCenterSystem, location.latitude, location.longitude);
   requireValue(distance + accuracy <= location.radius + 1e-6, `当前位置不在「${location.name}」的有效打卡范围内（距中心 ${Math.round(distance)} 米，范围 ${location.radius} 米，定位误差 ${Math.round(accuracy)} 米）`);
   return {
     employeeId: employee.id,

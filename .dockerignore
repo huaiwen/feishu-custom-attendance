@@ -6,6 +6,7 @@
 !domain.mjs
 !feishu.mjs
 !schedule-tools.mjs
+!access.mjs
 !public/
 !public/**
 

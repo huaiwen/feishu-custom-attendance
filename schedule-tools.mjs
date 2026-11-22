@@ -36,9 +36,13 @@ export function attendanceSummary(state, range, now = new Date()) {
     const key = `${record.scheduleId}:${record.segmentIndex}:${record.kind}`;
     if (!punches.has(key)) punches.set(key, record);
   }
-  const rows = state.schedules.filter(schedule => schedule.date >= from && schedule.date <= to).map(schedule => {
-    const row = { employeeId: schedule.employeeId, employeeName: names.get(schedule.employeeId) || schedule.employeeId,
-      date: schedule.date, ...ZERO_COUNTS, expectedCount: schedule.segments.length * 2 };
+  const byEmployeeDay = new Map();
+  for (const schedule of state.schedules) {
+    if (schedule.date < from || schedule.date > to) continue;
+    const key = `${schedule.employeeId}:${schedule.date}`;
+    const row = byEmployeeDay.get(key) || { employeeId: schedule.employeeId,
+      employeeName: names.get(schedule.employeeId) || schedule.employeeId, date: schedule.date, ...ZERO_COUNTS };
+    const cutoff = schedule.cancelledAt ? clockParts(new Date(schedule.cancelledAt)) : clock;
     schedule.segments.forEach((segment, index) => {
       const [hours, minutes] = segment.end.split(':').map(Number);
       const end = hours * 60 + minutes;
@@ -46,17 +50,21 @@ export function attendanceSummary(state, range, now = new Date()) {
         const record = punches.get(`${schedule.id}:${index}:${kind}`);
         if (record && record.employeeId === schedule.employeeId) {
           if (!['normal', 'late', 'early'].includes(record.status)) throw new DomainError('考勤记录状态无效，无法生成统计');
+          row.expectedCount++;
           row.punchedCount++;
           row[`${record.status}Count`]++;
         } else {
-          const overdue = schedule.date < clock.date || (schedule.date === clock.date
-            && (kind === 'in' ? clock.minutes >= end : clock.minutes > end + 120));
+          const overdue = schedule.date < cutoff.date || (schedule.date === cutoff.date
+            && (kind === 'in' ? cutoff.minutes >= end : cutoff.minutes > end + 120));
+          if (schedule.cancelledAt && !overdue) continue;
+          row.expectedCount++;
           row[overdue ? 'missingCount' : 'pendingCount']++;
         }
       }
     });
-    return row;
-  }).sort((a, b) => b.date.localeCompare(a.date) || a.employeeName.localeCompare(b.employeeName, 'zh-CN') || a.employeeId.localeCompare(b.employeeId));
+    byEmployeeDay.set(key, row);
+  }
+  const rows = [...byEmployeeDay.values()].sort((a, b) => b.date.localeCompare(a.date) || a.employeeName.localeCompare(b.employeeName, 'zh-CN') || a.employeeId.localeCompare(b.employeeId));
   const totals = { ...ZERO_COUNTS, scheduledDays: rows.length };
   for (const row of rows) for (const key of Object.keys(ZERO_COUNTS)) totals[key] += row[key];
   return { from, to, generatedAt: now.toISOString(), rows, totals };

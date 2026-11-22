@@ -47,7 +47,7 @@ export function reminderCard(config, title, subtitle, details, button, url) {
 }
 
 export function dailyAttendance(state, employeeId, date, now) {
-  const punches=state.schedules.filter(s=>s.employeeId===employeeId && s.date===date).flatMap(schedule=>schedule.segments.flatMap((segment,segmentIndex)=>
+  const punches=state.schedules.filter(s=>!s.cancelledAt && s.employeeId===employeeId && s.date===date).flatMap(schedule=>schedule.segments.flatMap((segment,segmentIndex)=>
     ['in','out'].map(kind=>({scheduleId:schedule.id,segmentIndex,kind,time:kind==='in'?segment.start:segment.end,
       locationName:state.locations.find(l=>l.id===segment.locationId)?.name || '排班指定地点',
       done:state.records.some(r=>r.scheduleId===schedule.id && r.segmentIndex===segmentIndex && r.kind===kind),
@@ -101,6 +101,7 @@ export function reminderPunch(state, openId, key) {
   const schedule=state.schedules.find(s=>s.id===scheduleId && s.employeeId===employee.id);
   if (!schedule || !schedule.segments[segmentIndex] || !['in','out'].includes(kind)) throw new DomainError('排班已调整，请从飞书工作台查看最新安排',409);
   const record=state.records.find(r=>r.employeeId===employee.id && r.scheduleId===scheduleId && r.segmentIndex===segmentIndex && r.kind===kind);
+  if (!record && schedule.cancelledAt) throw new DomainError('该排班已删除，请从飞书工作台查看最新安排',409);
   if (!record && signature!==punchSignature(state,schedule,segmentIndex)) throw new DomainError('排班或地点已调整，请从飞书工作台查看最新安排',409);
   const segment=schedule.segments[segmentIndex];
   return {input:{employeeId:employee.id,scheduleId,segmentIndex,kind},date:schedule.date,time:kind==='in'?segment.start:segment.end,
@@ -117,9 +118,15 @@ export function dueReminders(state, config, now) {
   const candidates = new Map();
   const add = (type, openId, subject, schedule, segment, kind, time, dueAt) => {
     if (now < dueAt || now >= dueAt + WINDOW) return;
-    const key = createHash('sha256').update(JSON.stringify([type, openId, subject, schedule.date, kind, time])).digest('hex').slice(0, 40);
+    const keyParts = [type, openId, subject, schedule.date, kind, time];
+    let key = createHash('sha256').update(JSON.stringify(keyParts)).digest('hex').slice(0, 40);
     const label = kind === 'in' ? '上班' : '下班';
     if (type==='checkin') {
+      // A cancelled shift's reminder must not suppress a replacement at the same time.
+      const previousId = state.reminders?.deliveries.find(r => r.key === key)?.punch?.scheduleId;
+      if (previousId && previousId !== schedule.id && !state.schedules.some(s => s.id === previousId && !s.cancelledAt)) {
+        key = createHash('sha256').update(JSON.stringify([...keyParts, schedule.id])).digest('hex').slice(0, 40);
+      }
       candidates.set(key,punchReminder(state,config,{key,openId,schedule,segmentIndex:schedule.segments.indexOf(segment),kind,dueAt,now}));return;
     }
     const card = reminderCard(config,'考勤记录待查看',`${schedule.date} · ${time} ${label}`,
@@ -128,6 +135,7 @@ export function dueReminders(state, config, now) {
   };
   const orgAdmins = [...new Set([...config.adminOpenIds, ...state.employees.filter(e => e.orgAdmin && !e.disabled).map(e => e.openId).filter(Boolean)])].filter(id=>sessionFor(state,id,config.adminOpenIds));
   for (const schedule of state.schedules) {
+    if (schedule.cancelledAt) continue;
     const employee = state.employees.find(e => e.id === schedule.employeeId);
     if (!employee || employee.disabled) continue;
     const group = state.groups.find(g => g.id === schedule.groupId);

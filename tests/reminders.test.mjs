@@ -37,6 +37,21 @@ test('Each person chooses 15 or 30 minutes; admin delay defaults to 60 and ordin
   assert.equal(dueReminders(state,config,at('17:30')).length,0);
 });
 
+test('Deleting a punched schedule stops its outstanding punches and lets a replacement send a fresh reminder', () => {
+  const state = fixture();
+  const date = state.schedules[0].date;
+  const original = dueReminders(state,config,at('08:45')).find(x=>x.openId==='ou_a');
+  state.reminders.deliveries.push({ ...original, status:'sent' });
+  state.schedules[0].cancelledAt = new Date(at('08:46')).toISOString();
+  assert.equal(dailyAttendance(state,'a',date,at('08:46')).total,0);
+  assert.ok(!dueReminders(state,config,at('08:46')).some(x=>x.openId==='ou_a'));
+  assert.throws(()=>reminderPunch(state,'ou_a',original.key),/排班已删除/);
+  state.schedules.push({ ...state.schedules[0], id:'replacement', cancelledAt:undefined });
+  const replacement = dueReminders(state,config,at('08:47')).find(x=>x.openId==='ou_a');
+  assert.notEqual(replacement.key,original.key);
+  assert.equal(replacement.punch.scheduleId,'replacement');
+});
+
 test('Review reminders aggregate by group and punch time, follow current managers, and fallback to organization admins', () => {
   const state = fixture();
   let items = dueReminders(state,config,at('10:00'));

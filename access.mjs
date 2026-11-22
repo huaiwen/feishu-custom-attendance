@@ -17,11 +17,11 @@ export function requireGroup(session, groupId, state) {
   if (!managesGroup(session, groupId)) throw new DomainError('只能管理自己负责的考勤组', 403);
 }
 
-export function visibleState(state, session, adminOpenIds) {
+export function visibleState(state, session, adminOpenIds, { includeCancelledSchedules = false } = {}) {
   const org = session.role === 'org_admin';
   const manager = session.role !== 'user';
   const canRead = item => org || item.employeeId === session.employeeId || managesGroup(session, item.groupId);
-  const schedules = state.schedules.filter(canRead);
+  const schedules = state.schedules.filter(s => (includeCancelledSchedules || !s.cancelledAt) && canRead(s));
   const locationIds = new Set(schedules.flatMap(s => s.segments.map(p => p.locationId)));
   const own = state.employees.find(e => e.id === session.employeeId);
   const { reminders, workflows, ...attendance } = state;

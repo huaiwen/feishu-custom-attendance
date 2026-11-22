@@ -124,6 +124,7 @@ export function evaluatePunch(state, input, now = new Date()) {
   requireValue(employee && !employee.disabled, '成员不存在或已停用');
   const schedule = state.schedules.find(item => item.id === input.scheduleId);
   requireValue(schedule && schedule.employeeId === employee.id, '排班不存在或不属于当前员工');
+  requireValue(!schedule.cancelledAt, '该排班已删除，请刷新查看最新安排', 409);
   requireValue(schedule.date === clock.date, '只能对当天排班打卡');
   requireValue(Number.isInteger(input.segmentIndex) && input.segmentIndex >= 0 && input.segmentIndex < schedule.segments.length, '打卡时段无效');
   requireValue(input.kind === 'in' || input.kind === 'out', '打卡类型应为上班或下班');

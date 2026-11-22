@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { createAttendanceServer, configuration } from '../server.mjs';
+import { clockParts } from '../domain.mjs';
 
 async function start(file, env = { PORT: '0' }) {
   const app = createAttendanceServer({ env, dataFile: file });
@@ -139,8 +140,8 @@ test('Rule preview uses supplied demonstration time and never persists a punch',
   assert.equal(await readFile(file, 'utf8'), before);
 });
 
-test('Concurrent punches create one historical record, protect its schedule and safely export CSV', async t => {
-  const { app } = await fixture(t);
+test('A punched schedule can be deleted and replaced without losing its punch or duplicating the day in reports', async t => {
+  const { app, file } = await fixture(t);
   const state = await app.state();
   const created = await (await app.request('/api/employees', { method: 'POST', data: { ...employee, name: '=SUM("1",2)', employeeNo: '+001' } })).json();
   const scheduleData = { employeeIds: [created.employee.id], dates: [state.today], segments: [{ start: '00:00', end: '23:59', locationId: state.locations[0].id }] };
@@ -154,7 +155,26 @@ test('Concurrent punches create one historical record, protect its schedule and 
   assert.equal(saved.records[0].source, 'demo');
   assert.ok(Math.abs(Date.now() - Date.parse(saved.records[0].timestamp)) < 5000);
   assert.equal((await app.request('/api/schedules', { method: 'POST', data: { ...scheduleData, overwrite: true } })).status, 409);
-  assert.equal((await app.request(`/api/schedules/${schedule.id}`, { method: 'DELETE' })).status, 409);
+  assert.equal((await app.request(`/api/schedules/${schedule.id}`, { method: 'DELETE' })).status, 200);
+  const afterDelete = await app.state();
+  assert.ok(!afterDelete.schedules.some(s => s.id === schedule.id));
+  assert.deepEqual(afterDelete.records, saved.records);
+  const archived = JSON.parse(await readFile(file,'utf8')).schedules.find(s => s.id === schedule.id);
+  assert.ok(archived.cancelledAt);
+  assert.deepEqual(archived.segments, schedule.segments);
+  const stale = await app.request('/api/checkin', { method:'POST', data:{ ...data, kind:'in' } });
+  assert.equal(stale.status,409);
+  assert.match((await stale.json()).error,/排班已删除/);
+  assert.equal((await app.request(`/api/schedules/${schedule.id}`, { method:'DELETE' })).status,404);
+  assert.equal((await app.request('/api/schedules', { method:'POST', data:scheduleData })).status,200);
+  const replacement = (await app.state()).schedules.find(s => s.employeeId === created.employee.id);
+  assert.notEqual(replacement.id,schedule.id);
+  const summary = await (await app.request(`/api/attendance-summary?from=${state.today}&to=${state.today}`)).json();
+  const rows = summary.rows.filter(r => r.employeeId === created.employee.id);
+  assert.equal(rows.length,1);
+  assert.equal(rows[0].punchedCount,1);
+  const cutoff = clockParts(new Date(archived.cancelledAt));
+  assert.equal(rows[0].expectedCount, cutoff.date > state.today || cutoff.minutes === 1439 ? 4 : 3);
   const csv = await (await app.request('/api/records.csv')).text();
   assert.ok(csv.includes('"\'=SUM(""1"",2)"'));
   assert.ok(csv.includes('"\'+001"'));

@@ -174,7 +174,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       const requireAuth = () => { if (!currentSession()) throw new DomainError('请先使用飞书登录', 401); };
       const requireAdmin = () => { requireAuth(); if (currentSession().role !== 'org_admin') throw new DomainError('此操作需要组织管理员权限', 403); };
       const requireManager = () => { requireAuth(); if (currentSession().role === 'user') throw new DomainError('此操作需要考勤组管理员权限', 403); };
-      const scopedState = () => visibleState(state, currentSession(), config.adminOpenIds);
+      const scopedState = options => visibleState(state, currentSession(), config.adminOpenIds, options);
       if (url.pathname === '/api/widget/today') {
         if (!config.widgetOrigin) throw new DomainError('工作台小组件尚未启用', 404);
         // 原生容器可能不发送 Origin；身份只能来自飞书一次性授权码，不使用网页 Cookie。
@@ -365,7 +365,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireAuth();
         const from = url.searchParams.get('from') || clockParts().date;
         const to = url.searchParams.get('to') || from;
-        return json(200, attendanceSummary(scopedState(), { from, to }));
+        return json(200, attendanceSummary(scopedState({ includeCancelledSchedules: true }), { from, to }));
       }
       const templateMatch = url.pathname.match(/^\/api\/shift-templates(?:\/([^/]+))?$/);
       if (templateMatch && ((req.method === 'POST' && !templateMatch[1]) || (req.method === 'PATCH' && templateMatch[1]))) {
@@ -518,8 +518,8 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const id = locationMatch[1];
         if (!state.locations.some(l => l.id === id && !l.archived)) throw new DomainError('考勤地点不存在', 404);
         const schedules = state.schedules.filter(s => s.segments.some(segment => segment.locationId === id));
-        const first = schedules.filter(s => s.date >= clockParts().date).map(s => s.date).sort()[0];
-        if (first) throw new DomainError(`该地点用于 ${first} 的排班。请先在「排班」改用其他地点或删除未打卡的排班；已有打卡记录的今日排班，请次日再移除地点。`, 409);
+        const first = schedules.filter(s => !s.cancelledAt && s.date >= clockParts().date).map(s => s.date).sort()[0];
+        if (first) throw new DomainError(`该地点用于 ${first} 的排班。请先在「排班」改用其他地点或删除对应排班。`, 409);
         const used = schedules.length > 0 || state.records.some(r => r.locationId === id);
         commit(next => {
           if (used) next.locations.find(l => l.id === id).archived = true;
@@ -541,10 +541,10 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireManager();
         const input = validateScheduleBatch(await readBody(req), state);
         for (const employeeId of input.employeeIds) requireGroup(currentSession(), state.employees.find(e => e.id === employeeId).groupId, state);
-        const existing = state.schedules.filter(s => input.employeeIds.includes(s.employeeId) && input.dates.includes(s.date));
+        const existing = state.schedules.filter(s => !s.cancelledAt && input.employeeIds.includes(s.employeeId) && input.dates.includes(s.date));
         for (const schedule of existing) requireGroup(currentSession(), schedule.groupId, state);
         if (existing.length && !input.overwrite) throw new DomainError(`有 ${existing.length} 条已有排班，请确认覆盖后重试`, 409);
-        if (existing.some(s => state.records.some(r => r.scheduleId === s.id))) throw new DomainError('所选排班已有打卡记录，不能覆盖；请选择其他日期', 409);
+        if (existing.some(s => state.records.some(r => r.scheduleId === s.id))) throw new DomainError('所选排班已有打卡记录。请先删除旧排班，再新增排班。', 409);
         commit(next => {
           const ids = new Set(existing.map(s => s.id));
           next.schedules = next.schedules.filter(s => !ids.has(s.id));
@@ -557,10 +557,12 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireManager();
         const id = scheduleMatch[1];
         const schedule = state.schedules.find(s => s.id === id);
-        if (!schedule) throw new DomainError('排班不存在', 404);
+        if (!schedule || schedule.cancelledAt) throw new DomainError('排班不存在或已删除', 404);
         requireGroup(currentSession(), schedule.groupId, state);
-        if (state.records.some(r => r.scheduleId === id)) throw new DomainError('已有打卡记录，不能删除该排班', 409);
-        commit(next => { next.schedules = next.schedules.filter(s => s.id !== id); });
+        commit(next => {
+          if (next.records.some(r => r.scheduleId === id)) next.schedules.find(s => s.id === id).cancelledAt = new Date().toISOString();
+          else next.schedules = next.schedules.filter(s => s.id !== id);
+        });
         return json(200, { ok: true });
       }
       if (['/api/checkin', '/api/checkin/preview'].includes(url.pathname) && req.method === 'POST') {

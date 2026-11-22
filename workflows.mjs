@@ -91,7 +91,7 @@ export function workflowView(state, session, config) {
     nativeUrl:approvalLink(r.id),nativeDesktopUrl:approvalLink(r.id,{desktop:true})})).reverse();
   return {enabled:config.workflows.enabled,requests,
     definitions:Object.fromEntries(Object.entries(config.workflows.definitions).map(([kind,d])=>[kind,d.id ? {url:approvalLink(d.id,{form:true}),desktopUrl:approvalLink(d.id,{form:true,desktop:true})} : null])),
-    locations:state.locations.map(l=>({id:l.id,name:l.name})),
+    locations:state.locations.filter(l=>!l.archived).map(l=>({id:l.id,name:l.name})),
     ...(org ? {status:{lastEventAt:w.lastEventAt || null,error:w.error || null,pending:w.jobs.filter(j=>j.status !== 'done').length,archived:Object.keys(w.archive).length},tableUrl:config.workflows.appToken ? `https://feishu.cn/base/${config.workflows.appToken}?table=${config.workflows.tableId}` : null} : {})};
 }
 
@@ -169,7 +169,7 @@ export function createWorkflows({getState,commit,config,api,now = Date.now}) {
       if (!Number.isInteger(index) || !r.ranges[index]) throw new DomainError('请选择加班时段');
       const range = r.ranges[index], time = now();
       if (time < Date.parse(range.start) || time > Date.parse(range.end)) throw new DomainError('请在获批的加班时段内到现场核验');
-      const location = getState().locations.find(l=>l.id===input.locationId);
+      const location = getState().locations.find(l=>l.id===input.locationId && !l.archived);
       const position = evaluateLocation(location,input,new Date(time));
       proof = {rangeIndex:index,locationId:location.id,locationName:location.name,at:new Date(time).toISOString(),...position};
     }
@@ -255,7 +255,7 @@ export function createWorkflows({getState,commit,config,api,now = Date.now}) {
           if (job.type==='calendar-action') await requestCalendar(job.requestId,job.openId);
           if (job.type==='contact') {
             const user=job.change==='deleted' ? null : await api.contact(job.openId);
-            commit(state=>{const e=state.employees.find(e=>e.openId===job.openId);if(e && user) {e.name=user.name;e.disabled=Boolean(user.status?.is_resigned || user.status?.is_exited || user.status?.is_frozen);}});
+            commit(state=>{const e=state.employees.find(e=>e.openId===job.openId);if(e && user) {e.name=user.name;e.disabled=Boolean(e.removed || user.status?.is_resigned || user.status?.is_exited || user.status?.is_frozen);}});
             if (job.change!=='updated') {
               const name=user?.name || getState().employees.find(e=>e.openId===job.openId)?.name || '一位组织成员';
               for (const openId of [...new Set([...config.adminOpenIds,...getState().employees.filter(e=>e.orgAdmin && !e.disabled).map(e=>e.openId)])].filter(Boolean)) {

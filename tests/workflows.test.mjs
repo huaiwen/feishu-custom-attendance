@@ -196,7 +196,7 @@ test('Simulated overtime walks the real employee screen from pending approval th
     },
   });
   const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
-  runInContext(source.slice(source.indexOf('const requestStatusLabels ='),source.indexOf('async function renderDepartments()')),context);
+  runInContext(source.slice(source.indexOf('const requestStatusLabels ='),source.indexOf('async function renderIntegration()')),context);
   const button=()=>({dataset:{id:'instance1',index:'0'},textContent:'定位核验并加入日历',disabled:false});
   f.event('PENDING','pending');await f.service.run();await f.service.run();await context.renderRequests();
   assert.match(main.innerHTML,/审批中/);assert.doesNotMatch(main.innerHTML,/data-action="workflow-calendar"/);

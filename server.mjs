@@ -171,7 +171,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       // Resolve employee bindings on every request so account changes take effect immediately.
       const currentSession = () => auth && sessionFor(state, auth.openId, config.adminOpenIds, config.mode === 'demo');
       const session = currentSession();
-      const requireAuth = () => { if (!session) throw new DomainError('请先使用飞书登录', 401); };
+      const requireAuth = () => { if (!currentSession()) throw new DomainError('请先使用飞书登录', 401); };
       const requireAdmin = () => { requireAuth(); if (currentSession().role !== 'org_admin') throw new DomainError('此操作需要组织管理员权限', 403); };
       const requireManager = () => { requireAuth(); if (currentSession().role === 'user') throw new DomainError('此操作需要考勤组管理员权限', 403); };
       const scopedState = () => visibleState(state, currentSession(), config.adminOpenIds);
@@ -304,6 +304,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const openId = auth.openId || 'demo';
         if (req.method === 'PUT') {
           const body = await readBody(req);
+          requireAuth();
           const preferences = validateReminderPreferences(body, currentSession().role);
           commit(next => { initializeReminders(next).preferences[openId] = { ...next.reminders.preferences[openId], ...preferences }; });
         }
@@ -403,6 +404,20 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         commit(next => { next.groups = [...next.groups.filter(g => g.id !== id), group]; });
         return json(200, { group });
       }
+      if (groupMatch?.[1] && req.method === 'DELETE') {
+        requireAdmin();
+        const id = groupMatch[1];
+        if (!state.groups.some(g => g.id === id)) throw new DomainError('考勤组不存在', 404);
+        if (state.employees.some(e => e.groupId === id && !e.removed) ||
+            state.schedules.some(s => s.groupId === id) || state.records.some(r => r.groupId === id)) {
+          throw new DomainError('该考勤组仍有成员、排班或历史记录。请先转移成员并处理未打卡的排班；有历史记录的组需保留。', 409);
+        }
+        commit(next => {
+          next.groups = next.groups.filter(g => g.id !== id);
+          for (const employee of next.employees) if (employee.groupId === id) employee.groupId = null;
+        });
+        return json(200, { ok: true });
+      }
       if (url.pathname === '/api/directory' && req.method === 'GET') {
         requireManager();
         if (config.mode !== 'feishu') return json(200, { departments: [], users: state.employees.map(e => ({ openId: e.id, name: e.name, department: e.department })), demo: true });
@@ -436,7 +451,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
               employee = { id: randomUUID(), employeeNo: '', openId: user.openId, orgAdmin: false };
               next.employees.push(employee);
             }
-            Object.assign(employee, { name: user.name, department: user.department, groupId: input.groupId, disabled: false });
+            Object.assign(employee, { name: user.name, department: user.department, groupId: input.groupId, disabled: false, removed: false });
           }
         });
         return json(200, { count: users.length });
@@ -447,7 +462,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const input = await readBody(req);
         requireAdmin();
         const employee = state.employees.find(e => e.id === accessMatch[1]);
-        if (!employee) throw new DomainError('员工不存在', 404);
+        if (!employee || employee.removed) throw new DomainError('该成员已不在考勤名单中', 404);
         requireGroup(currentSession(), input.groupId, state);
         if (!['user', 'group_admin', 'org_admin'].includes(input.role)) throw new DomainError('请选择有效的角色');
         if (!Array.isArray(input.managedGroupIds) || new Set(input.managedGroupIds).size !== input.managedGroupIds.length || input.managedGroupIds.some(id => !state.groups.some(g => g.id === id)) || (input.role === 'group_admin' && !input.managedGroupIds.length)) throw new DomainError('考勤组管理员须选择至少一个负责的组');
@@ -462,25 +477,62 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         return json(200, { ok: true });
       }
       const employeeMatch = url.pathname.match(/^\/api\/employees(?:\/([^/]+))?$/);
+      if (employeeMatch?.[1] && req.method === 'DELETE') {
+        requireAdmin();
+        const id = employeeMatch[1];
+        const employee = state.employees.find(e => e.id === id && !e.removed);
+        if (!employee) throw new DomainError('该成员已不在考勤名单中', 404);
+        if (config.adminOpenIds.includes(employee.openId) || currentSession().employeeId === id) {
+          throw new DomainError('不能移除初始组织管理员或你当前登录的账号', 409);
+        }
+        const today = clockParts().date;
+        const punched = new Set(state.records.map(r => r.scheduleId));
+        commit(next => {
+          Object.assign(next.employees.find(e => e.id === id), { disabled: true, removed: true, orgAdmin: false });
+          for (const group of next.groups) group.adminIds = group.adminIds.filter(adminId => adminId !== id);
+          next.schedules = next.schedules.filter(s => s.employeeId !== id || s.date < today || punched.has(s.id));
+        });
+        if (employee.openId) for (const [key, login] of sessions) {
+          if (login.openId === employee.openId) sessions.delete(key);
+        }
+        return json(200, { ok: true });
+      }
       if (employeeMatch && ['POST', 'PATCH'].includes(req.method)) {
         requireAdmin();
         if (config.mode === 'feishu') throw new DomainError('请从飞书组织选择成员；已绑定身份不能手动改写', 403);
-        const input = validateEmployee(await readBody(req));
+        const body = await readBody(req);
+        const input = validateEmployee(body);
         requireAdmin();
         const id = req.method === 'PATCH' ? employeeMatch[1] : randomUUID();
-        if (req.method === 'PATCH' && !state.employees.some(e => e.id === id)) throw new DomainError('员工不存在', 404);
+        if (req.method === 'PATCH' && !state.employees.some(e => e.id === id && !e.removed)) throw new DomainError('员工不存在', 404);
         if (state.employees.some(e => e.id !== id && (e.employeeNo === input.employeeNo || (input.openId && e.openId === input.openId)))) throw new DomainError('工号或飞书 Open ID 已被其他员工使用', 409);
-        const employee = { ...state.employees.find(e => e.id === id), id, groupId: state.employees.find(e => e.id === id)?.groupId || state.groups[0].id, ...input };
+        const groupId = body.groupId ?? state.employees.find(e => e.id === id)?.groupId ?? state.groups[0]?.id;
+        requireGroup(currentSession(), groupId, state);
+        const employee = { ...state.employees.find(e => e.id === id), id, groupId, ...input };
         commit(next => { next.employees = [...next.employees.filter(e => e.id !== id), employee]; });
         return json(200, { employee });
       }
       const locationMatch = url.pathname.match(/^\/api\/locations(?:\/([^/]+))?$/);
+      if (locationMatch?.[1] && req.method === 'DELETE') {
+        requireAdmin();
+        const id = locationMatch[1];
+        if (!state.locations.some(l => l.id === id && !l.archived)) throw new DomainError('考勤地点不存在', 404);
+        const schedules = state.schedules.filter(s => s.segments.some(segment => segment.locationId === id));
+        const first = schedules.filter(s => s.date >= clockParts().date).map(s => s.date).sort()[0];
+        if (first) throw new DomainError(`该地点用于 ${first} 的排班。请先在「排班」改用其他地点或删除未打卡的排班；已有打卡记录的今日排班，请次日再移除地点。`, 409);
+        const used = schedules.length > 0 || state.records.some(r => r.locationId === id);
+        commit(next => {
+          if (used) next.locations.find(l => l.id === id).archived = true;
+          else next.locations = next.locations.filter(l => l.id !== id);
+        });
+        return json(200, { ok: true });
+      }
       if (locationMatch && ['POST', 'PATCH'].includes(req.method)) {
         requireAdmin();
         const input = validateLocation(await readBody(req));
         requireAdmin();
         const id = req.method === 'PATCH' ? locationMatch[1] : randomUUID();
-        if (req.method === 'PATCH' && !state.locations.some(l => l.id === id)) throw new DomainError('地点不存在', 404);
+        if (req.method === 'PATCH' && !state.locations.some(l => l.id === id && !l.archived)) throw new DomainError('地点不存在', 404);
         const location = { id, ...input };
         commit(next => { next.locations = [...next.locations.filter(l => l.id !== id), location]; });
         return json(200, { location });
@@ -521,7 +573,8 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
           Object.assign(input,result.input);
           if (result.record) {void reminders.syncCompleted().catch(()=>{});return json(200,{preview:false,record:result.record});}
         }
-        if (config.mode === 'feishu' && input.employeeId !== session.employeeId) throw new DomainError('只能为本人打卡', 403);
+        requireAuth();
+        if (config.mode === 'feishu' && input.employeeId !== currentSession().employeeId) throw new DomainError('只能为本人打卡', 403);
         const timestamp = preview && input.timestamp ? new Date(input.timestamp) : new Date();
         if (!Number.isFinite(timestamp.getTime())) throw new DomainError('试算时间格式不正确');
         const draft = evaluatePunch(preview ? { ...state, records: [] } : state, input, timestamp);

@@ -31,7 +31,7 @@ test('Ordinary users get personal pages and cannot open management drawers throu
 
 test('Group and organization administrators have different workspaces and authority controls', () => {
   const manager = screen('group_admin');
-  assert.deepEqual(manager.views,['overview','schedules','employees','groups','records','checkin','requests']);
+  assert.deepEqual(manager.views,['overview','groups','employees','schedules','records','checkin','requests']);
   assert.doesNotMatch(manager.nodes.get('#navigation').innerHTML,/考勤地点|飞书接入/);
   runInContext("openDrawer('access');openDrawer('location');openDrawer('group');",manager.context);
   assert.equal(runInContext('ui.drawer',manager.context),null);
@@ -39,6 +39,7 @@ test('Group and organization administrators have different workspaces and author
   assert.ok(org.views.includes('locations') && org.views.includes('integration'));
   assert.match(org.nodes.get('#user-label').innerHTML,/组织管理员/);
   const nav=org.nodes.get('#navigation').innerHTML;
+  assert.doesNotMatch(nav,/组织部门|企业工作台|工作空间/);
   assert.match(nav,/<summary[^>]*>[\s\S]*?更多<\/span><\/summary>/);
   assert.equal((nav.split('<details')[0].match(/data-action="navigate"/g)||[]).length-(nav.split('<details')[0].match(/nav-secondary/g)||[]).length,4);
 });
@@ -56,12 +57,11 @@ test('Setup chooses the next missing requirement from real data and keeps group 
   runInContext("ui.db.schedules.push({id:'past',groupId:'g1',employeeId:'self',date:'2026-11-22',segments:[]});",context);
   assert.equal(next(),'schedules','past schedules do not satisfy upcoming work');
   runInContext("ui.db.schedules.push({id:'today',groupId:'g1',employeeId:'self',date:ui.db.today,segments:[]});",context);
-  assert.equal(next(),'checkin');
-  assert.equal(runInContext("setupSteps().find(s => s.id==='checkin').view",context),'checkin');
+  assert.equal(next(),undefined);
   runInContext("ui.db.groups.push({id:'g2',name:'新组',adminIds:[]});ui.group='g2';",context);
   assert.equal(next(),'employees','new group cannot inherit another group’s completed setup');
   const manager = screen('group_admin');
-  assert.deepEqual(JSON.parse(runInContext('JSON.stringify(setupSteps().map(s => s.id))',manager.context)),['employees','schedules','checkin']);
+  assert.deepEqual(JSON.parse(runInContext('JSON.stringify(setupSteps().map(s => s.id))',manager.context)),['employees','schedules']);
 });
 
 test('Scheduling prerequisites point to an actionable page; personal schedules remain read-only', () => {
@@ -70,7 +70,7 @@ test('Scheduling prerequisites point to an actionable page; personal schedules r
   assert.match(org.nodes.get('#main').innerHTML,/去设置地点/);
   const manager = screen('group_admin');
   assert.equal(runInContext('schedulePrerequisite().view',manager.context),'overview');
-  assert.match(manager.nodes.get('#main').innerHTML,/联系管理员/);
+  assert.match(manager.nodes.get('#main').innerHTML,/联系组织管理员/);
   runInContext("ui.db.locations=[{id:'place'}];ui.group='empty';",org.context);
   assert.equal(runInContext('schedulePrerequisite().view',org.context),'employees');
   const user = screen('user');

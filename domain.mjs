@@ -74,7 +74,7 @@ export function validateScheduleBatch(input, state) {
   object(input);
   requireValue(Array.isArray(input.employeeIds) && input.employeeIds.length > 0, '请至少选择一位员工');
   requireValue(new Set(input.employeeIds).size === input.employeeIds.length, '员工不能重复选择');
-  requireValue(input.employeeIds.every(id => typeof id === 'string' && state.employees.some(employee => employee.id === id)), '选择的员工不存在');
+  requireValue(input.employeeIds.every(id => typeof id === 'string' && state.employees.some(employee => employee.id === id && !employee.disabled)), '选择的成员不存在或已停用');
   requireValue(Array.isArray(input.dates) && input.dates.length >= 1 && input.dates.length <= 366, '请选择 1 至 366 个排班日期');
   requireValue(input.dates.every(validDate), '排班日期无效，请使用 YYYY-MM-DD 格式');
   requireValue(new Set(input.dates).size === input.dates.length, '排班日期不能重复');
@@ -85,7 +85,7 @@ export function validateScheduleBatch(input, state) {
     const start = timeMinutes(segment.start);
     const end = timeMinutes(segment.end);
     requireValue(start < end, '时段结束时间必须晚于开始时间，跨天班次请分成两天设置');
-    requireValue(typeof segment.locationId === 'string' && state.locations.some(location => location.id === segment.locationId), '选择的打卡地点不存在');
+    requireValue(typeof segment.locationId === 'string' && state.locations.some(location => location.id === segment.locationId && !location.archived), '选择的考勤地点不存在或已移除');
     return { start: segment.start, end: segment.end, locationId: segment.locationId };
   }).sort((a, b) => a.start.localeCompare(b.start));
   for (let index = 1; index < segments.length; index++) {
@@ -121,7 +121,7 @@ export function evaluatePunch(state, input, now = new Date()) {
   object(input);
   const clock = clockParts(now);
   const employee = state.employees.find(item => item.id === input.employeeId);
-  requireValue(employee, '员工不存在');
+  requireValue(employee && !employee.disabled, '成员不存在或已停用');
   const schedule = state.schedules.find(item => item.id === input.scheduleId);
   requireValue(schedule && schedule.employeeId === employee.id, '排班不存在或不属于当前员工');
   requireValue(schedule.date === clock.date, '只能对当天排班打卡');

@@ -43,7 +43,7 @@ export function visibleState(state, session, adminOpenIds) {
 export function validateGroup(input, state) {
   if (typeof input.name !== 'string' || !input.name.trim() || input.name.trim().length > 80) throw new DomainError('考勤组名称应为 1 至 80 个字符');
   if (!Array.isArray(input.adminIds) || input.adminIds.length > 100 || new Set(input.adminIds).size !== input.adminIds.length ||
-      input.adminIds.some(id => !state.employees.some(e => e.id === id))) throw new DomainError('请选择有效且不重复的组管理员');
+      input.adminIds.some(id => !state.employees.some(e => e.id === id && !e.removed))) throw new DomainError('请选择有效且不重复的组管理员');
   return { name: input.name.trim(), adminIds: [...input.adminIds] };
 }
 

@@ -1,5 +1,7 @@
 /* The native title owns the header; the tested 150px iPhone frame leaves a 106px body. */
-.attendance { display: flex; flex-direction: column; width: 100%; padding: 8px 12px; box-sizing: border-box; background-color: #ffffff; }
+.attendance { display: flex; flex-direction: column; width: 100%; padding: 8px 12px; box-sizing: border-box; background-color: #ffffff; cursor: default; user-select: none; }
+.attendance text { cursor: default; }
+.attendance .action, .attendance .action-label, .attendance .records-link, .attendance .records-label { cursor: pointer; }
 .content { display: flex; flex-direction: column; width: 100%; height: 86px; flex-shrink: 0; }
 .attendance-expanded { padding: 16px; }
 .expanded { height: 208px; }

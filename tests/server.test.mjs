@@ -87,6 +87,9 @@ test('CRUD validates values and uniqueness, keeps data across a restart', async 
   const persisted = await restarted.state();
   assert.equal(persisted.employees.find(e => e.id === created.employee.id).name, '已更新员工');
   assert.equal(persisted.locations.find(l => l.id === createdLocation.location.id).radius, 120);
+  assert.equal((await restarted.request(`/api/locations/${createdLocation.location.id}`, { method: 'DELETE' })).status, 200);
+  assert.ok(!(await restarted.state()).locations.some(l => l.id === createdLocation.location.id));
+  assert.equal((await restarted.request('/api/locations/loc-a', { method: 'DELETE' })).status, 409);
 });
 
 test('Host, Origin, JSON body and protected file paths are enforced', async t => {
@@ -267,6 +270,13 @@ test('OAuth sessions enforce employee isolation, administrator access and logout
   assert.equal(all.records.length, 2);
   assert.equal(all.employees[0].bound, true);
   assert.equal((await app.request('/api/locations', { method: 'POST', data: location, headers: adminHeaders })).status, 200);
+  assert.equal((await app.request('/api/employees/other', { method: 'DELETE', headers: workerHeaders })).status, 403);
+  assert.equal((await app.request('/api/employees/worker', { method: 'DELETE', headers: adminHeaders })).status, 200);
+  assert.equal((await app.request('/api/state', { headers: workerHeaders })).status, 401);
+  const afterRemoval = await (await app.request('/api/state', { headers: adminHeaders })).json();
+  assert.equal(afterRemoval.employees.find(e => e.id === 'worker').removed, true);
+  assert.deepEqual(afterRemoval.records, all.records, 'member removal preserves records');
+  assert.deepEqual(afterRemoval.schedules, all.schedules, 'member removal preserves punched schedules');
   assert.equal((await app.request('/auth/logout', { method: 'POST', headers: workerHeaders })).status, 200);
   assert.equal((await app.request('/api/state', { headers: workerHeaders })).status, 401);
   assert.equal((await app.request('/api/state', { headers: adminHeaders })).status, 200);
@@ -333,6 +343,9 @@ test('Three roles enforce group boundaries, verified directory imports and immed
   }
   const stateAs = async who => (await app.request('/api/state',{headers:who})).json();
   const call = (who,path,data,method='POST') => app.request(path,{headers:who,data,method});
+  for (const path of ['/api/locations/office','/api/groups/g1','/api/employees/worker']) {
+    assert.equal((await call(manager,path,undefined,'DELETE')).status,403);
+  }
   const visible = await stateAs(manager);
   assert.equal(visible.session.role,'group_admin');
   assert.deepEqual(visible.groups.map(g => g.id),['g1']);
@@ -365,6 +378,16 @@ test('Three roles enforce group boundaries, verified directory imports and immed
   assert.equal((await call(org,'/api/employees/import',{openIds:['ou_new'],groupId:'g1'})).status,200);
   assert.equal((await stateAs(org)).employees.filter(e => e.id === imported.id).length,1);
   assert.equal((await call(org,'/api/employees/admin/access',{groupId:'g1',role:'user',managedGroupIds:[]},'PATCH')).status,409);
+  assert.equal((await call(org,'/api/employees/admin',undefined,'DELETE')).status,409);
+  assert.equal((await call(org,'/api/groups/g1',undefined,'DELETE')).status,409);
+  const emptyGroup = (await (await call(org,'/api/groups',{name:'空组',adminIds:[]})).json()).group;
+  assert.equal((await call(org,`/api/groups/${emptyGroup.id}`,undefined,'DELETE')).status,200);
+  assert.equal((await call(org,'/api/schedules',{...schedule,employeeIds:[imported.id]})).status,200);
+  assert.equal((await call(org,`/api/employees/${imported.id}`,undefined,'DELETE')).status,200);
+  assert.ok(!(await stateAs(org)).schedules.some(s => s.employeeId === imported.id));
+  assert.equal((await call(org,'/api/schedules',{...schedule,employeeIds:[imported.id]})).status,400);
+  assert.equal((await call(org,'/api/employees/import',{openIds:['ou_new'],groupId:'g1'})).status,200);
+  assert.equal((await stateAs(org)).employees.find(e => e.id === imported.id).disabled,false);
   assert.equal((await call(org,'/api/employees/worker/access',{groupId:'g1',role:'group_admin',managedGroupIds:[]},'PATCH')).status,400);
   assert.equal((await call(org,'/api/employees/worker/access',{groupId:'g1',role:'group_admin',managedGroupIds:['g2']},'PATCH')).status,200);
   assert.equal((await stateAs(worker)).session.role,'group_admin');

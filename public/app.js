@@ -23,7 +23,7 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;',
 const safeColor = value => /^#[a-fA-F0-9]{6}$/.test(value || '') ? value : '#3370ff';
 const weekdays = ['一','二','三','四','五','六','日'];
 const views = {overview:['首页','building','首页'],locations:['考勤地点','pin','地点'],groups:['考勤组','building','考勤组'],employees:['人员管理','users','人员'],schedules:['排班','calendar','排班'],records:['考勤记录','records','记录'],checkin:['我的打卡','checkin','打卡'],requests:['请假与加班','calendar','申请'],integration:['飞书接入','link','接入']};
-const ui = {group:'',directory:null,directorySearch:'',directoryDepartment:'',directorySelected:new Set(),db:null,view:'overview',guided:false,week:null,search:'',employee:'',recordFrom:'',recordTo:'',recordEmployee:'',recordStatus:'',scheduleTab:'personal',recordTab:'flow',summaryFrom:'',summaryTo:'',summary:null,summaryError:'',summaryLoading:false,drawer:null,busy:false};
+const ui = {previewRole:'',group:'',directory:null,directorySearch:'',directoryDepartment:'',directorySelected:new Set(),db:null,view:'overview',guided:false,week:null,search:'',employee:'',recordFrom:'',recordTo:'',recordEmployee:'',recordStatus:'',scheduleTab:'personal',recordTab:'flow',summaryFrom:'',summaryTo:'',summary:null,summaryError:'',summaryLoading:false,drawer:null,busy:false};
 const main = document.querySelector('#main');
 const drawer = document.querySelector('#drawer');
 let toastTimer;
@@ -40,7 +40,9 @@ function activeEmployees() {return ui.db.employees.filter(employee => !employee.
 function hasPunches(schedule) {return ui.db.records.some(record => record.scheduleId === schedule.id);}
 function toast(message, error = false) {const node = document.querySelector('#toast');node.textContent = message;node.className = `toast visible${error ? ' error' : ''}`;clearTimeout(toastTimer);toastTimer = setTimeout(() => node.classList.remove('visible'), error ? 6000 : 3500);}
 async function api(path, body, method = 'POST') {
+  if (ui.previewRole && body !== undefined) throw new Error('角色预览仅供查看。切回组织管理员后再操作。');
   const options = body === undefined ? {headers:{Accept:'application/json'}} : {method,headers:{'Content-Type':'application/json','X-Requested-With':'fetch'},body:JSON.stringify(body)};
+  if (ui.previewRole) options.headers['X-Attendance-Preview'] = ui.previewRole;
   const response = await fetch(path, options);
   const data = await response.json();
   if (!response.ok) {const error = new Error(data.error || '请求失败，请稍后再试');error.status = response.status;throw error;}
@@ -49,21 +51,50 @@ async function api(path, body, method = 'POST') {
 async function refresh() {ui.db = await api('/api/state');if (ui.group && !ui.db.groups.some(g => g.id === ui.group)) ui.group = '';if (!ui.week) ui.week = monday(ui.db.today);if (!employeeById(ui.employee) || employeeById(ui.employee).disabled) ui.employee = ui.db.session?.employeeId || activeEmployees().find(e => !e.disabled)?.id || '';}
 function isAdmin() {return ['org_admin','group_admin'].includes(ui.db.session?.role);}
 function isOrgAdmin() {return ui.db.session?.role === 'org_admin';}
-const roleLabels = {user:'普通用户',group_admin:'考勤组管理员',org_admin:'组织管理员'};
+const roleLabels = {user:'普通用户',group_admin:'组长',org_admin:'组织管理员'};
 function managedGroups() {return ui.db.groups.filter(g => isOrgAdmin() || ui.db.session.managedGroupIds.includes(g.id));}
 function groupName(id) {return ui.db.groups.find(g => g.id === id)?.name || '未分组';}
 function visibleViews() {return isOrgAdmin() ? Object.keys(views) : isAdmin() ? ['overview','groups','employees','schedules','records','checkin','requests'] : ['checkin','schedules','requests','records'];}
+function previewControl() {
+  if (!ui.db.previewGroups) return '';
+  const options = [['','组织管理员'],['user','普通成员'],...ui.db.previewGroups.map(g => [`group:${g.id}`,`组长 · ${g.name}`])];
+  return `<label class="preview-control"><span>角色预览</span><select data-role-preview aria-label="预览角色">${options.map(([value,label]) => `<option value="${esc(value)}" ${ui.previewRole === value ? 'selected' : ''}>${esc(label)}</option>`).join('')}</select></label>`;
+}
+async function switchPreview(value) {
+  if (ui.busy || ui.previewRole === value) return;
+  const previous = ui.previewRole;
+  ui.previewRole = value;
+  ui.busy = true;
+  workflowLoad++;
+  try {
+    await refresh();
+    ui.group = ui.recordFrom = ui.recordTo = ui.recordEmployee = ui.recordStatus = '';
+    ui.summary = null;summaryRequest++;
+    ui.recordTab = 'flow';ui.scheduleTab = 'personal';ui.guided = false;
+    ui.employee = ui.db.session?.employeeId || ui.db.employees.find(e => !e.disabled)?.id || '';
+    navigate(isAdmin() ? 'overview' : 'checkin');
+  } catch (error) {
+    ui.previewRole = previous;
+    render();
+    toast(error.message,true);
+  } finally {ui.busy = false;}
+}
 function renderShell() {
   const available=visibleViews(), primary=isAdmin() ? ['overview','schedules','records','checkin'] : available;
   const secondary=available.filter(key=>!primary.includes(key));
   const navButton=(key,extra='')=>`<button class="nav-button ${extra} ${ui.view === key ? 'active' : ''}" data-action="navigate" data-view="${key}" aria-label="${views[key][0]}" ${ui.view === key ? 'aria-current="page"' : ''} title="${views[key][0]}">${icon(views[key][1])}<span class="nav-label-full">${!isAdmin() && key === 'schedules' ? '我的排班' : views[key][0]}</span><span class="nav-label-mobile" aria-hidden="true">${views[key][2]}</span></button>`;
+  const reminderButton = extra => `<button class="nav-button ${extra}" type="button" data-action="reminders" title="我的提醒" aria-label="我的提醒">${icon('clock')}<span class="nav-label-full">我的提醒</span></button>`;
   document.querySelector('#navigation').innerHTML=available.map(key=>`${key === 'checkin' && isAdmin() ? '<div class="nav-separator"></div>' : ''}${navButton(key,secondary.includes(key)?'nav-secondary':'')}`).join('')+
-    (secondary.length ? `<details class="nav-more"><summary class="nav-button ${secondary.includes(ui.view)?'active':''}">${icon('plus')}<span>更多</span></summary><div class="nav-more-panel">${secondary.map(key=>navButton(key)).join('')}</div></details>` : '');
+    reminderButton('nav-secondary') +
+    `<details class="nav-more"><summary class="nav-button ${secondary.includes(ui.view)?'active':''}">${icon('plus')}<span>更多</span></summary><div class="nav-more-panel">${secondary.map(key=>navButton(key)).join('')}${reminderButton('')}${previewControl()}</div></details>`;
+  document.querySelector('#role-preview').innerHTML = previewControl();
   document.querySelector('#breadcrumb-label').textContent = !isAdmin() && ui.view === 'schedules' ? '我的排班' : views[ui.view][0];
   document.querySelector('#mode-label').hidden = ui.db.mode !== 'demo';
-  document.querySelector('#my-reminders').hidden = false;
-  document.querySelector('#session-logout').hidden = ui.db.mode !== 'feishu';
-  document.querySelector('#topbar-date').textContent = `${ui.db.today.replaceAll('-','.')} · ${ui.db.timezone || 'Asia/Shanghai'}`;
+  const notice = document.querySelector('#preview-notice');
+  notice.hidden = !ui.previewRole;
+  notice.textContent = ui.previewRole ? `${roleLabels[ui.db.session.role]}视角 · 只读预览` : '';
+
+
   const employee = employeeById(ui.db.session?.employeeId);
   document.querySelector('.sidebar-user .avatar').textContent = employee?.name.slice(-1) || '管';
   document.querySelector('#user-label').innerHTML = `${esc(employee?.name || '组织管理员')}<small>${roleLabels[ui.db.session.role]}</small>`;
@@ -103,6 +134,7 @@ function setupSteps() {
   ];
 }
 function renderOverview() {
+  if (!isOrgAdmin()) return renderLeader();
   const steps = setupSteps(), next = steps.find(step => !step.done);
   const ready = !schedulePrerequisite();
   main.innerHTML = `${pageHeader(isOrgAdmin() ? '开始管理考勤' : '考勤组工作台',isOrgAdmin() ? '按顺序完成配置，让成员在手机飞书中顺利打卡。' : '从组内成员到排班、打卡记录，只管理你负责的考勤组。')}
@@ -111,6 +143,31 @@ function renderOverview() {
     <ol class="setup-list">${steps.map((step,index) => `<li ${next === step ? 'aria-current="step"' : ''}><span class="setup-index ${step.done ? 'done' : ''}">${step.done ? icon('checkin') : index+1}</span><div><h3>${step.title}<span class="status ${step.done ? '' : 'muted'}">${step.done ? '已具备' : next === step ? '下一步' : '待完成'}</span></h3><p>${esc(step.detail)}</p></div><button class="text-button" data-action="setup-step" data-step="${step.id}">${step.done ? '查看' : step.button}</button></li>`).join('')}</ol></section>
     ${!isOrgAdmin() && !activeLocations().length ? `<div class="info-banner warning">${icon('info')}<p>还没有考勤地点，请组织管理员先设置地点。</p></div>` : ''}
     <div class="overview-actions"><button class="button" data-action="navigate" data-view="schedules" ${ready ? '' : 'disabled'}>查看排班</button><button class="button" data-action="navigate" data-view="records">核对打卡记录</button><button class="text-button" data-action="navigate" data-view="checkin">我的打卡</button></div>`;
+}
+function renderLeader() {
+  const groups = managedGroups().filter(g => !ui.group || ui.group === g.id);
+  const today = ui.db.today;
+  const panels = groups.map(group => {
+    const records = ui.db.records.filter(r => r.groupId === group.id && r.date === today);
+    const schedules = ui.db.schedules.filter(s => s.groupId === group.id && s.date === today);
+    const members = activeEmployees().filter(e => e.groupId === group.id && !e.disabled);
+    return `<section class="panel leader-panel" aria-label="${esc(group.name)}">
+      <div class="toolbar"><h2>${esc(group.name)}</h2><span>${members.length} 位成员 · ${records.length} 条今日打卡</span>
+      <button class="text-button ml-auto" data-action="leader-records" data-id="${esc(group.id)}">查看组内记录</button></div>
+      <div class="table-scroll"><table class="data-table"><thead><tr><th>成员</th><th>今日打卡</th><th>最近一次</th></tr></thead>
+      <tbody>${members.map(member => {
+        const punches = records.filter(r => r.employeeId === member.id);
+        const latest = punches.reduce((last,r) => !last || r.timestamp > last.timestamp ? r : last,null);
+        const schedule = schedules.find(s => s.employeeId === member.id);
+        const count = schedule ? punches.filter(r => r.scheduleId === schedule.id).length : 0;
+        const result = schedule ? `已打 ${count} / ${schedule.segments.length * 2}` : punches.length ? `已打 ${punches.length} 次` : '未排班';
+        const latestStatus = latest && ({normal:'正常',late:'迟到',early:'早退'}[latest.status] || '');
+        return `<tr><td><strong>${esc(member.name)}</strong></td><td>${result}</td><td>${latest ? `${displayTime(latest.timestamp)} · ${latest.kind === 'in' ? '上班' : '下班'} · ${latestStatus}` : '—'}</td></tr>`;
+      }).join('')}</tbody></table></div>
+      ${members.length ? '' : '<p class="empty-state">本组暂无成员</p>'}</section>`;
+  });
+  main.innerHTML = `${pageHeader('组长工作台',`${today} · 组内打卡情况`)}${groups.length > 1 || ui.group ? groupFilter() : ''}${panels.join('')}`;
+  labelTableCells();
 }
 async function startSetupStep(id) {
   if (!isAdmin()) return;
@@ -137,7 +194,7 @@ function scheduleTable() {
 function scheduleTabs() {if (!isOrgAdmin()) return '';return `<nav class="page-tabs" aria-label="排班视图"><button data-action="schedule-tab" data-tab="personal" class="${ui.scheduleTab === 'personal' ? 'active' : ''}" aria-pressed="${ui.scheduleTab === 'personal'}">个人排班</button><button data-action="schedule-tab" data-tab="templates" class="${ui.scheduleTab === 'templates' ? 'active' : ''}" aria-pressed="${ui.scheduleTab === 'templates'}">班次模板</button></nav>`;}
 function renderTemplates() {
   const templates = ui.db.shiftTemplates || [];
-  main.innerHTML = `${pageHeader('精细化排班','保存常用班次，排班时再为每个时段指定地点。',`<button class="button primary" data-action="new-template">${icon('plus')}新增班次</button>`)}${scheduleTabs()}<section class="panel"><div class="table-scroll"><table class="data-table template-table"><thead><tr><th>班次名称</th><th>工作时段</th><th>备注</th><th>操作</th></tr></thead><tbody>${templates.map(template => `<tr><td><strong>${esc(template.name)}</strong><small>${template.segments.length} 个工作时段</small></td><td><div class="template-times">${template.segments.map(segment => `<span>${esc(segment.start)}–${esc(segment.end)}</span>`).join('')}</div></td><td>${esc(template.note || '—')}</td><td><button class="text-button" data-action="edit-template" data-id="${esc(template.id)}">编辑班次</button></td></tr>`).join('')}</tbody></table>${!templates.length ? `<div class="empty-state">${icon('clock')}还没有班次模板<p>将常用工作时间保存为模板，方便批量安排员工排班。</p><button class="button" data-action="new-template">新增班次</button></div>` : ''}</div><div class="panel-footer"><span>共 ${templates.length} 个班次模板</span><span>修改或删除模板不会影响已保存的排班</span></div></section>`;
+  main.innerHTML = `${pageHeader('排班','先配好时间和地点，再把班次分给成员。',`<button class="button primary" data-action="new-template">${icon('plus')}新增班次</button>`)}${scheduleTabs()}<section class="panel"><div class="table-scroll"><table class="data-table template-table"><thead><tr><th>班次名称</th><th>工作时段</th><th>备注</th><th>操作</th></tr></thead><tbody>${templates.map(template => `<tr><td><strong>${esc(template.name)}</strong><small>${template.segments.length} 个工作时段</small></td><td><div class="template-times">${template.segments.map(segment => `<span>${esc(segment.start)}–${esc(segment.end)} · ${esc((!locationById(segment.locationId)?.archived && locationById(segment.locationId)?.name) || '待设置地点')}</span>`).join('')}</div></td><td>${esc(template.note || '—')}</td><td><div class="row-actions"><button class="text-button" data-action="assign-template" data-id="${esc(template.id)}">分配人员</button><button class="text-button" data-action="edit-template" data-id="${esc(template.id)}">编辑班次</button></div></td></tr>`).join('')}</tbody></table>${!templates.length ? `<div class="empty-state">${icon('clock')}还没有班次模板<p>将常用工作时间保存为模板，方便批量安排员工排班。</p><button class="button" data-action="new-template">新增班次</button></div>` : ''}</div><div class="panel-footer"><span>共 ${templates.length} 个班次模板</span><span>修改或删除模板不会影响已保存的排班</span></div></section>`;
   labelTableCells();
 }
 function renderSchedules() {
@@ -147,8 +204,8 @@ function renderSchedules() {
   if (prerequisite && !ui.db.schedules.length) {main.innerHTML = `${pageHeader('排班','先准备地点和成员，再安排工作时段。')}${scheduleTabs()}<section class="panel empty-state">${icon('calendar')}<h2>还差一步就能排班</h2><p>${esc(prerequisite.text)}</p><button class="button primary" data-action="navigate" data-view="${prerequisite.view}">${prerequisite.action}</button></section>`;return;}
   const weekSchedules = ui.db.schedules.filter(s => s.date >= ui.week && s.date <= addDays(ui.week,6));
   const totalSegments = weekSchedules.reduce((total,s) => total+s.segments.length,0);
-  main.innerHTML = `${pageHeader(isAdmin() ? '精细化排班' : '我的排班','点选某一天的排班即可查看、修改或删除。',isAdmin() ? `<button class="button primary" data-action="new-schedule" ${prerequisite ? 'disabled' : ''}>${icon('plus')}新增排班</button>` : '')}${scheduleTabs()}
-    <section class="panel" aria-label="员工周排班表"><div class="toolbar"><div class="week-control"><span class="week-label">${monthDay(ui.week)} — ${monthDay(addDays(ui.week,6))}</span><button class="icon-button" data-action="previous-week" aria-label="上一周">${icon('left')}</button><button class="icon-button" data-action="next-week" aria-label="下一周">${icon('right')}</button><button class="today-button" data-action="this-week">本周</button></div><label class="search-box">${icon('search')}<input type="search" id="schedule-search" placeholder="搜索姓名、部门或工号" value="${esc(ui.search)}" aria-label="搜索员工"></label><span class="view-label">${icon('calendar')}周排班</span></div>${isAdmin() ? groupFilter() : ''}<div id="schedule-grid">${scheduleTable()}</div><div class="panel-footer"><div class="location-legend">${activeLocations().map(location => `<span class="legend-item"><i class="dot" style="--location:${safeColor(location.color)}"></i>${esc(location.name)} · ${location.radius} 米</span>`).join('')}</div><span>${new Set(weekSchedules.map(s => s.employeeId)).size} 位员工已排班 · ${totalSegments} 个工作时段</span></div></section>
+  main.innerHTML = `${pageHeader('排班','一次安排一段时间，也可以按需添加多个时段。',isAdmin() ? `<button class="button primary" data-action="new-schedule" ${prerequisite ? 'disabled' : ''}>${icon('plus')}新增排班</button>` : '')}${scheduleTabs()}
+    <section class="panel" aria-label="员工周排班表"><div class="toolbar"><div class="week-control"><span class="week-label">${monthDay(ui.week)} — ${monthDay(addDays(ui.week,6))}</span><button class="icon-button" data-action="previous-week" aria-label="上一周">${icon('left')}</button><button class="icon-button" data-action="next-week" aria-label="下一周">${icon('right')}</button><button class="today-button" data-action="this-week">本周</button></div><label class="search-box">${icon('search')}<input type="search" id="schedule-search" placeholder="搜索姓名、部门或工号" value="${esc(ui.search)}" aria-label="搜索员工"></label><label class="jump-date">跳到日期 <input type="date" id="jump-schedule-date" value="${ui.week}"></label></div>${isAdmin() ? groupFilter() : ''}<div id="schedule-grid">${scheduleTable()}</div><div class="panel-footer"><div class="location-legend">${activeLocations().map(location => `<span class="legend-item"><i class="dot" style="--location:${safeColor(location.color)}"></i>${esc(location.name)} · ${location.radius} 米</span>`).join('')}</div><span>${new Set(weekSchedules.map(s => s.employeeId)).size} 位员工已排班 · ${totalSegments} 个工作时段</span></div></section>
     <div class="hint-line">${icon('info')}<span>每个时段分别校验指定地点，未排班日期无需打卡。${ui.db.mode === 'demo' ? '当前使用示例数据。' : ''}</span></div>`;
 }
 function renderPersonalSchedule() {
@@ -171,7 +228,7 @@ function renderEmployees() {
   labelTableCells();
 }
 function renderGroups() {
-  main.innerHTML = `${pageHeader('考勤组',isOrgAdmin() ? '创建考勤组并指定负责的管理员。' : '仅可管理自己负责的考勤组。',isOrgAdmin() ? `<button class="button primary" data-action="new-group">${icon('plus')}新增考勤组</button>` : '')}<section class="panel"><div class="table-scroll"><table class="data-table"><thead><tr><th>考勤组</th><th>成员</th><th>组管理员</th><th>操作</th></tr></thead><tbody>${managedGroups().map(g => `<tr><td><strong>${esc(g.name)}</strong></td><td>${activeEmployees().filter(e => e.groupId === g.id).length} 人</td><td>${g.adminIds.map(id => esc(employeeById(id)?.name || '已指定管理员')).join('、') || '由组织管理员管理'}</td><td><div class="row-actions"><button class="text-button" data-action="group-schedules" data-id="${esc(g.id)}">安排排班</button><button class="text-button" data-action="group-members" data-id="${esc(g.id)}">查看成员</button>${ui.db.mode === 'feishu' ? `<button class="text-button" data-action="group-add-members" data-id="${esc(g.id)}">添加成员</button>` : ''}${isOrgAdmin() ? `<button class="text-button" data-action="edit-group" data-id="${esc(g.id)}">编辑</button><button class="text-button danger" data-action="remove-group" data-id="${esc(g.id)}">删除组</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div></section>`;
+  main.innerHTML = `${pageHeader('考勤组',isOrgAdmin() ? '从飞书添加组员，再指定组长。' : '仅可管理自己负责的考勤组。',isOrgAdmin() ? `<button class="button primary" data-action="new-group">${icon('plus')}新增考勤组</button>` : '')}<section class="panel"><div class="table-scroll"><table class="data-table"><thead><tr><th>考勤组</th><th>成员</th><th>组长</th><th>操作</th></tr></thead><tbody>${managedGroups().map(g => `<tr><td><strong>${esc(g.name)}</strong></td><td>${activeEmployees().filter(e => e.groupId === g.id).length} 人</td><td>${g.adminIds.map(id => esc(employeeById(id)?.name || '已指定管理员')).join('、') || '由组织管理员管理'}</td><td><div class="row-actions"><button class="text-button" data-action="group-schedules" data-id="${esc(g.id)}">安排排班</button><button class="text-button" data-action="group-members" data-id="${esc(g.id)}">查看成员</button>${ui.db.mode === 'feishu' ? `<button class="text-button" data-action="group-add-members" data-id="${esc(g.id)}">添加成员</button>` : ''}${isOrgAdmin() ? `<button class="text-button" data-action="edit-group" data-id="${esc(g.id)}">编辑</button><button class="text-button danger" data-action="remove-group" data-id="${esc(g.id)}">删除组</button>` : ''}</div></td></tr>`).join('')}</tbody></table></div></section>`;
   labelTableCells();
 }
 function groupOptions(selected) {return managedGroups().map(g => `<option value="${esc(g.id)}" ${g.id === selected ? 'selected' : ''}>${esc(g.name)}</option>`).join('');}
@@ -203,10 +260,15 @@ function filteredRecords() {
   return ui.db.records.filter(record => (!ui.group || record.groupId === ui.group) && (!ui.recordFrom || record.date >= ui.recordFrom) && (!ui.recordTo || record.date <= ui.recordTo) && (!ui.recordEmployee || record.employeeId === ui.recordEmployee) && (!ui.recordStatus || record.status === ui.recordStatus)).sort((a,b) => b.timestamp.localeCompare(a.timestamp));
 }
 function recordTabs() {return `<nav class="page-tabs" aria-label="考勤记录视图"><button data-action="record-tab" data-tab="flow" class="${ui.recordTab === 'flow' ? 'active' : ''}" aria-pressed="${ui.recordTab === 'flow'}">打卡流水</button><button data-action="record-tab" data-tab="summary" class="${ui.recordTab === 'summary' ? 'active' : ''}" aria-pressed="${ui.recordTab === 'summary'}">考勤统计</button></nav>`;}
+function recordActions() {
+  if (!isAdmin() || ui.previewRole) return '';
+  const ledger = ui.db.integration?.ledgerUrl;
+  return `<div class="record-actions">${ledger ? `<a class="button primary" href="${esc(ledger)}" target="_blank" rel="noopener noreferrer">${icon('link')}打开飞书考勤台账</a>` : ''}<a class="button" href="/api/records.csv" download>${icon('download')}导出记录</a></div>`;
+}
 function renderAttendanceSummary() {
   if (!ui.summaryFrom) ui.summaryFrom = monday(ui.db.today);
   if (!ui.summaryTo) ui.summaryTo = ui.db.today;
-  main.innerHTML = `${pageHeader('考勤记录','按排班统计应打、已打和缺卡情况。')}${recordTabs()}<section class="panel"><div class="toolbar records-toolbar"><label class="filter-field">开始<input type="date" id="summary-from" value="${ui.summaryFrom}" aria-label="统计开始日期"></label><label class="filter-field">结束<input type="date" id="summary-to" value="${ui.summaryTo}" aria-label="统计结束日期"></label><button class="button small" data-action="load-summary">查询统计</button><span class="toolbar-note ml-auto">每次最多查询 31 天</span></div><div id="summary-content" aria-live="polite"></div></section><div class="hint-line">${icon('info')}<span>缺卡指打卡窗口已结束但尚未打卡；待打指窗口尚未结束。未排班日期不计入应打次数。</span></div>`;
+  main.innerHTML = `${pageHeader('考勤记录','按排班统计应打、已打和缺卡情况。',recordActions())}${recordTabs()}<section class="panel"><div class="toolbar records-toolbar"><label class="filter-field">开始<input type="date" id="summary-from" value="${ui.summaryFrom}" aria-label="统计开始日期"></label><label class="filter-field">结束<input type="date" id="summary-to" value="${ui.summaryTo}" aria-label="统计结束日期"></label><button class="button small" data-action="load-summary">查询统计</button><span class="toolbar-note ml-auto">每次最多查询 31 天</span></div><div id="summary-content" aria-live="polite"></div></section><div class="hint-line">${icon('info')}<span>缺卡指打卡窗口已结束但尚未打卡；待打指窗口尚未结束。未排班日期不计入应打次数。</span></div>`;
   loadAttendanceSummary();
 }
 function renderSummaryContent() {
@@ -238,10 +300,10 @@ function renderRecords() {
   if (ui.recordTab === 'summary') return renderAttendanceSummary();
   const records = filteredRecords();
   const statusLabel = {normal:'正常',late:'迟到',early:'早退'};
-  main.innerHTML = `${pageHeader(isAdmin() ? '考勤记录' : '我的打卡记录',isAdmin() ? '核对打卡时间、指定地点与异常情况。' : '查看自己的打卡结果与异常情况。',isAdmin() ? `<a class="button" href="/api/records.csv" download>${icon('download')}导出全部记录</a>` : '')}${recordTabs()}${isAdmin() ? groupFilter() : ''}<section class="panel"><div class="toolbar records-toolbar"><label class="filter-field">开始<input type="date" id="record-from" value="${ui.recordFrom}" aria-label="记录开始日期"></label><label class="filter-field">结束<input type="date" id="record-to" value="${ui.recordTo}" aria-label="记录结束日期"></label><label class="filter-field">员工<select id="record-employee"><option value="">全部员工</option>${ui.db.employees.map(e => `<option value="${esc(e.id)}" ${ui.recordEmployee === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select></label><label class="filter-field">状态<select id="record-status"><option value="">全部状态</option>${Object.entries(statusLabel).map(([value,label]) => `<option value="${value}" ${ui.recordStatus === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><button class="text-button ml-auto" data-action="reset-record-filters">重置筛选</button></div><div class="table-scroll"><table class="data-table"><thead><tr><th>员工 / 日期</th><th>打卡时间</th><th>指定地点</th><th>距中心 / 精度</th><th>状态</th><th>来源</th></tr></thead><tbody>${records.map(record => `<tr><td><strong>${esc(record.employeeName || employeeById(record.employeeId)?.name || '未知员工')}</strong><small>${esc(record.date)}</small></td><td><strong>${displayTime(record.timestamp)}</strong><small>第 ${record.segmentIndex+1} 时段 · ${record.kind === 'in' ? '上班' : '下班'}</small></td><td>${esc(record.locationName || locationById(record.locationId)?.name || '未知地点')}</td><td>${Number(record.distance).toFixed(1)} m <span class="muted">/ ±${Number(record.accuracy).toFixed(0)} m</span></td><td><span class="status ${record.status === 'normal' ? '' : 'warn'}">${statusLabel[record.status] || esc(record.status)}</span></td><td><span class="status muted">${record.source === 'demo' ? '演示打卡' : '飞书身份'}</span></td></tr>`).join('')}</tbody></table>${!records.length ? `<div class="empty-state">${icon('records')}暂无打卡记录<p>实际打卡成功后会在这里保存记录；规则试算不会写入记录。</p></div>` : ''}</div><div class="panel-footer"><span>共 ${records.length} 条记录</span><span>时间均为北京时间 · Asia/Shanghai</span></div></section>`;
+  main.innerHTML = `${pageHeader(isAdmin() ? '考勤记录' : '我的打卡记录',isAdmin() ? '核对打卡时间、指定地点与异常情况。' : '查看自己的打卡结果与异常情况。',recordActions())}${recordTabs()}${isAdmin() ? groupFilter() : ''}<section class="panel"><div class="toolbar records-toolbar"><label class="filter-field">开始<input type="date" id="record-from" value="${ui.recordFrom}" aria-label="记录开始日期"></label><label class="filter-field">结束<input type="date" id="record-to" value="${ui.recordTo}" aria-label="记录结束日期"></label><label class="filter-field">员工<select id="record-employee"><option value="">全部员工</option>${ui.db.employees.map(e => `<option value="${esc(e.id)}" ${ui.recordEmployee === e.id ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select></label><label class="filter-field">状态<select id="record-status"><option value="">全部状态</option>${Object.entries(statusLabel).map(([value,label]) => `<option value="${value}" ${ui.recordStatus === value ? 'selected' : ''}>${label}</option>`).join('')}</select></label><button class="text-button ml-auto" data-action="reset-record-filters">重置筛选</button></div><div class="table-scroll"><table class="data-table"><thead><tr><th>员工 / 日期</th><th>打卡时间</th><th>指定地点</th><th>距中心 / 精度</th><th>状态</th><th>来源</th></tr></thead><tbody>${records.map(record => `<tr><td><strong>${esc(record.employeeName || employeeById(record.employeeId)?.name || '未知员工')}</strong><small>${esc(record.date)}</small></td><td><strong>${displayTime(record.timestamp)}</strong><small>第 ${record.segmentIndex+1} 时段 · ${record.kind === 'in' ? '上班' : '下班'}</small></td><td>${esc(record.locationName || locationById(record.locationId)?.name || '未知地点')}</td><td>${Number(record.distance).toFixed(1)} m <span class="muted">/ ±${Number(record.accuracy).toFixed(0)} m</span></td><td><span class="status ${record.status === 'normal' ? '' : 'warn'}">${statusLabel[record.status] || esc(record.status)}</span></td><td><span class="status muted">${record.source === 'demo' ? '演示打卡' : '飞书身份'}</span></td></tr>`).join('')}</tbody></table>${!records.length ? `<div class="empty-state">${icon('records')}暂无打卡记录<p>实际打卡成功后会在这里保存记录；规则试算不会写入记录。</p></div>` : ''}</div><div class="panel-footer"><span>共 ${records.length} 条记录</span><span>时间均为北京时间 · Asia/Shanghai</span></div></section>`;
   labelTableCells();
 }
-function currentEmployeeId() {return ui.db.mode === 'demo' ? ui.employee : ui.db.session?.employeeId;}
+function currentEmployeeId() {return ui.db.mode === 'demo' && !ui.previewRole ? ui.employee : ui.db.session?.employeeId;}
 function currentSchedule() {return ui.db.schedules.find(s => s.employeeId === currentEmployeeId() && s.date === ui.db.today);}
 function recorded(schedule, index, kind) {return ui.db.records.find(r => r.scheduleId === schedule.id && r.segmentIndex === index && r.kind === kind);}
 function renderCheckin() {
@@ -249,7 +311,7 @@ function renderCheckin() {
   const schedule = currentSchedule();
   const currentMinutes = displayTime(ui.db.now || new Date().toISOString()).split(':').reduce((hours,value,index) => hours + Number(value)*(index === 0 ? 60 : 1),0);
   const suggestedIndex = schedule ? schedule.segments.findIndex((segment,index) => {const [hour,minute] = segment.end.split(':').map(Number);return hour*60+minute+120 >= currentMinutes && (!recorded(schedule,index,'in') || !recorded(schedule,index,'out'));}) : -1;
-  main.innerHTML = `${pageHeader('今日打卡','按排班到达指定地点，完成上、下班打卡。')}${ui.db.mode === 'demo' ? `<div class="info-banner warning">${icon('info')}<p>本地演示 · 可切换示例员工。定位打卡保存演示记录；规则试算不产生记录。</p></div>` : ''}<div class="checkin-layout"><section class="panel"><div class="checkin-header"><div><strong>${esc(employee?.name || '尚未绑定员工身份')}</strong><p>${ui.db.today} · 今日排班</p></div>${ui.db.mode === 'demo' ? `<select class="employee-switch" id="checkin-employee" aria-label="切换演示员工">${activeEmployees().filter(e => !e.disabled).map(e => `<option value="${esc(e.id)}" ${e.id === ui.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select>` : '<span class="status">本人打卡</span>'}</div>${schedule ? schedule.segments.map((segment,index) => {const location = locationById(segment.locationId);return `<div class="checkin-day ${index === suggestedIndex ? 'current' : ''}"><div class="checkin-period"><span>时段 ${index+1}</span>${index === suggestedIndex ? '<span class="status muted">待完成</span>' : ''}</div><div class="checkin-time">${esc(segment.start)} <span class="muted">—</span> ${esc(segment.end)}</div><div class="checkin-place">${icon('pin')}${esc(location?.name || '未知地点')}</div><div class="checkin-radius">${esc(location?.address || '考勤地点')} · 打卡半径 ${location?.radius || 0} 米</div><div class="checkin-actions">${['in','out'].map(kind => {const record = recorded(schedule,index,kind);return `<button class="button ${index === suggestedIndex && kind === (recorded(schedule,index,'in') ? 'out' : 'in') ? 'primary' : ''}" data-action="checkin" data-index="${index}" data-kind="${kind}" ${record ? 'disabled' : ''}>${icon(record ? 'checkin' : 'pin')}${record ? `${kind === 'in' ? '上班' : '下班'}已打卡 ${displayTime(record.timestamp)}` : `${kind === 'in' ? '上班' : '下班'}定位打卡`}</button>`;}).join('')}</div></div>`;}).join('') : `<div class="empty-state">${icon('calendar')}${employee ? '今日未安排班次' : '请先绑定员工身份'}<p>${employee ? isAdmin() ? '先完成地点和成员配置，再安排今天的班次。' : '请联系考勤组管理员确认今天的安排。' : '请联系管理员从飞书组织中将你加入考勤组。'}</p><button class="button" data-action="navigate" data-view="${isAdmin() ? 'overview' : 'schedules'}">${isAdmin() ? '继续配置考勤' : '查看我的排班'}</button></div>`}</section><aside class="help-panel"><details class="rule-details"><summary>查看打卡规则</summary><ol><li><strong>按时段核对地点</strong><br>每个时段分别完成上、下班打卡，跨园区排班按照对应地点校验。</li><li><strong>允许定位权限</strong><br>使用手机并开启高精度定位。位置误差范围需完全落入考勤半径，精度须不大于半径且不超过 100 米。</li><li><strong>以服务器时间为准</strong><br>上班可提前 60 分钟打卡；下班最晚可在时段结束后 120 分钟打卡。晚到、早走将标记异常。</li></ol></details>${ui.db.mode === 'demo' && schedule ? `<div class="simulation"><h3>${icon('info')}规则试算 <span class="status muted">不写入记录</span></h3><p>使用指定位置和时段开始/结束时间，检查地点规则。</p><select id="preview-segment" aria-label="试算工作时段">${schedule.segments.map((segment,index) => `<option value="${index}">${segment.start}–${segment.end} · ${esc(locationById(segment.locationId)?.name)}</option>`).join('')}</select><select id="preview-kind" aria-label="试算打卡类型"><option value="in">上班打卡 · 时段开始时</option><option value="out">下班打卡 · 时段结束时</option></select><select id="preview-scenario" aria-label="试算定位场景"><option value="center">在指定地点中心 · 精度 5 米</option><option value="outside">偏离指定地点约 1 公里</option><option value="inaccurate">位于中心但定位精度不足</option></select><button class="button" data-action="preview">运行规则试算</button><div id="preview-result" role="status"></div></div>` : ''}</aside></div>`;
+  main.innerHTML = `${pageHeader('今日打卡','按排班到达指定地点，完成上、下班打卡。')}${ui.db.mode === 'demo' ? `<div class="info-banner warning">${icon('info')}<p>本地演示 · 可切换示例员工。定位打卡保存演示记录；规则试算不产生记录。</p></div>` : ''}<div class="checkin-layout"><section class="panel"><div class="checkin-header"><div><strong>${esc(employee?.name || '尚未绑定员工身份')}</strong><p>${ui.db.today} · 今日排班</p></div>${ui.db.mode === 'demo' && !ui.previewRole ? `<select class="employee-switch" id="checkin-employee" aria-label="切换演示员工">${activeEmployees().filter(e => !e.disabled).map(e => `<option value="${esc(e.id)}" ${e.id === ui.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select>` : '<span class="status">本人打卡</span>'}</div>${schedule ? schedule.segments.map((segment,index) => {const location = locationById(segment.locationId);return `<div class="checkin-day ${index === suggestedIndex ? 'current' : ''}"><div class="checkin-period"><span>时段 ${index+1}</span>${index === suggestedIndex ? '<span class="status muted">待完成</span>' : ''}</div><div class="checkin-time">${esc(segment.start)} <span class="muted">—</span> ${esc(segment.end)}</div><div class="checkin-place">${icon('pin')}${esc(location?.name || '未知地点')}</div><div class="checkin-radius">${esc(location?.address || '考勤地点')} · 打卡半径 ${location?.radius || 0} 米</div><div class="checkin-actions">${['in','out'].map(kind => {const record = recorded(schedule,index,kind);return `<button class="button ${index === suggestedIndex && kind === (recorded(schedule,index,'in') ? 'out' : 'in') ? 'primary' : ''}" data-action="checkin" data-index="${index}" data-kind="${kind}" ${record ? 'disabled' : ''}>${icon(record ? 'checkin' : 'pin')}${record ? `${kind === 'in' ? '上班' : '下班'}已打卡 ${displayTime(record.timestamp)}` : `${kind === 'in' ? '上班' : '下班'}定位打卡`}</button>`;}).join('')}</div></div>`;}).join('') : `<div class="empty-state">${icon('calendar')}${employee ? '今日未安排班次' : '请先绑定员工身份'}<p>${employee ? isAdmin() ? '先完成地点和成员配置，再安排今天的班次。' : '请联系考勤组管理员确认今天的安排。' : '请联系管理员从飞书组织中将你加入考勤组。'}</p><button class="button" data-action="navigate" data-view="${isAdmin() ? 'overview' : 'schedules'}">${isAdmin() ? '继续配置考勤' : '查看我的排班'}</button></div>`}</section><aside class="help-panel"><details class="rule-details"><summary>查看打卡规则</summary><ol><li><strong>按时段核对地点</strong><br>每个时段分别完成上、下班打卡，跨园区排班按照对应地点校验。</li><li><strong>允许定位权限</strong><br>使用手机并开启高精度定位。位置误差范围需完全落入考勤半径，精度须不大于半径且不超过 100 米。</li><li><strong>以服务器时间为准</strong><br>上班可提前 60 分钟打卡；下班最晚可在时段结束后 120 分钟打卡。晚到、早走将标记异常。</li></ol></details>${ui.db.mode === 'demo' && schedule ? `<div class="simulation"><h3>${icon('info')}规则试算 <span class="status muted">不写入记录</span></h3><p>使用指定位置和时段开始/结束时间，检查地点规则。</p><select id="preview-segment" aria-label="试算工作时段">${schedule.segments.map((segment,index) => `<option value="${index}">${segment.start}–${segment.end} · ${esc(locationById(segment.locationId)?.name)}</option>`).join('')}</select><select id="preview-kind" aria-label="试算打卡类型"><option value="in">上班打卡 · 时段开始时</option><option value="out">下班打卡 · 时段结束时</option></select><select id="preview-scenario" aria-label="试算定位场景"><option value="center">在指定地点中心 · 精度 5 米</option><option value="outside">偏离指定地点约 1 公里</option><option value="inaccurate">位于中心但定位精度不足</option></select><button class="button" data-action="preview">运行规则试算</button><div id="preview-result" role="status"></div></div>` : ''}</aside></div>`;
 }
 const requestStatusLabels = {PENDING:'审批中',APPROVED:'已通过',REJECTED:'已拒绝',CANCELED:'已撤回',DELETED:'已停用',REVERTED:'已撤销'};
 const kindLabels = {leave:'请假',overtime:'加班'};
@@ -279,8 +341,8 @@ async function renderRequests() {
       <span class="subtle">${r.calendarStatus === 'synced' ? '日历已同步' : r.calendarStatus === 'pending' ? '等待核验或日历同步' : '尚未加入日历'} · ${r.archiveStatus === 'synced' ? '已归档' : '等待归档'}</span></div></article>`;
     main.innerHTML = `${pageHeader('请假与加班','在飞书审批中提交申请，由教师组审批；通过后安排日历。','<button class="button" data-action="refresh-requests">刷新状态</button>')}
       ${!data.enabled ? '<div class="info-banner"><p>审批、日历和考勤台账正在接入。现有排班与打卡可继续使用。</p></div>' : ''}
-      <div class="request-start">${Object.entries(kindLabels).map(([kind,label])=>`<section class="panel request-item"><h2>${label}</h2><p>${kind === 'leave' ? '填写请假时间与事由。审批通过后，卡片可一键加入自己的日历。' : '申请加班时间。审批通过后，抵达现场核验位置，再加入自己的日历。'}</p>${data.enabled && data.definitions[kind] ? `<a class="button primary" href="${esc(nativeLink(data.definitions[kind]))}">申请${label}</a>` : '<button class="button" disabled>等待接通</button>'}</section>`).join('')}</div>
-      <div class="section-heading"><h2>我的申请</h2><a class="text-button" href="/api/workflows.csv">导出申请记录</a></div>
+      <div class="request-start">${Object.entries(kindLabels).map(([kind,label])=>`<section class="panel request-item"><h2>${label}</h2><p>${kind === 'leave' ? '填写请假时间与事由。审批通过后，卡片可一键加入自己的日历。' : '申请加班时间。审批通过后，抵达现场核验位置，再加入自己的日历。'}</p>${ui.previewRole ? '' : data.enabled && data.definitions[kind] ? `<a class="button primary" href="${esc(nativeLink(data.definitions[kind]))}">申请${label}</a>` : '<button class="button" disabled>等待接通</button>'}</section>`).join('')}</div>
+      <div class="section-heading"><h2>我的申请</h2>${ui.previewRole ? '' : '<a class="text-button" href="/api/workflows.csv">导出申请记录</a>'}</div>
       <div class="request-list">${mine.map(requestItem).join('') || '<section class="panel empty-state">还没有申请。提交后返回此页，可查看审批与日历状态。</section>'}</div>
       ${isAdmin() && others.length ? `<div class="section-heading"><h2>管理范围内的申请</h2></div><div class="request-list">${others.map(requestItem).join('')}</div>` : ''}`;
   } catch (error) {if (ui.view === 'requests') main.innerHTML += `<p class="form-error" role="alert">${esc(error.message)}</p>`;}
@@ -313,14 +375,75 @@ async function renderIntegration() {
   } catch(error) {if(ui.view==='integration') main.innerHTML+=`<p class="form-error" role="alert">${esc(error.message)}</p>`;}
 }
 
-function locationOptions(selected) {return ui.db.locations.filter(location => !location.archived || location.id === selected).map(location => `<option value="${esc(location.id)}" ${selected === location.id ? 'selected' : ''}>${esc(location.name)}${location.archived ? '（已移除）' : ''}</option>`).join('');}
-function segmentRow(segment = {start:'09:00',end:'18:00',locationId:activeLocations()[0]?.id}, withLocation = true) {return `<div class="segment-row ${withLocation ? '' : 'template-row'}"><label class="field">开始<input type="time" class="segment-start" value="${esc(segment.start)}" required></label><label class="field">结束<input type="time" class="segment-end" value="${esc(segment.end)}" required></label>${withLocation ? `<label class="field">考勤地点<select class="segment-location" required>${locationOptions(segment.locationId)}</select></label>` : ''}<button type="button" class="icon-button" data-action="remove-segment" aria-label="删除该时段">×</button></div>`;}
-function applyTemplate() {
-  const template = (ui.db.shiftTemplates || []).find(item => item.id === document.querySelector('#shift-template-select').value);
-  if (!template) return toast('请先选择班次模板',true);
-  const locationIds = [...document.querySelectorAll('#segment-list .segment-location')].map(select => select.value);
-  document.querySelector('#segment-list').innerHTML = template.segments.map((segment,index) => segmentRow({...segment,locationId:locationIds[index] || activeLocations()[0]?.id})).join('');
-  toast('已应用班次时间，请逐段确认考勤地点');
+function locationOptions(selected) {
+  return '<option value="">选择地点</option>' + activeLocations().map(location =>
+    `<option value="${esc(location.id)}" ${selected === location.id ? 'selected' : ''}>${esc(location.name)}</option>`).join('');
+}
+function segmentRow(segment = {start:'09:00',end:'18:00',locationId:activeLocations()[0]?.id}) {
+  return `<div class="segment-row">
+    <label class="field">上班时间<input type="time" class="segment-start" value="${esc(segment.start)}" required></label>
+    <label class="field">下班时间<input type="time" class="segment-end" value="${esc(segment.end)}" required></label>
+    <label class="field">考勤地点<select class="segment-location" required>${locationOptions(segment.locationId)}</select></label>
+    <button type="button" class="icon-button" data-action="remove-segment" aria-label="移除时段">×</button>
+  </div>`;
+}
+function shiftFields(segments) {
+  return `<fieldset class="plan-fieldset"><legend>工作时间和地点</legend>
+    <div id="segment-list">${segments?.map(segmentRow).join('') || segmentRow()}</div>
+    <button type="button" class="text-button" data-action="add-segment">${icon('plus')}添加时段 · 精细排班</button>
+  </fieldset>`;
+}
+function readSegments() {
+  return [...document.querySelectorAll('#segment-list .segment-row')].map(row => ({
+    start: row.querySelector('.segment-start').value,
+    end: row.querySelector('.segment-end').value,
+    locationId: row.querySelector('.segment-location').value,
+  }));
+}
+function applyTemplate(templateId) {
+  const template = ui.db.shiftTemplates.find(item => item.id === templateId);
+  if (template) document.querySelector('#segment-list').innerHTML = template.segments.map(segmentRow).join('');
+}
+function scheduleForm(item, employeeId, date, template) {
+  const members = ui.db.employees.filter(e => e.manageable && !e.disabled && (item ? e.id === item.employeeId : !ui.group || e.groupId === ui.group));
+  const selectedDay = esc(item?.date || date);
+  const selectedMember = item?.employeeId || employeeId;
+  const templateOptions = (ui.db.shiftTemplates || []).map(t =>
+    `<option value="${esc(t.id)}" ${t.id === template?.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('');
+  const dates = item
+    ? `<label class="field">排班日期<input type="date" name="startDate" value="${selectedDay}" required></label>`
+    : `<div class="field-grid">
+        <label class="field">开始日期<input type="date" name="startDate" value="${selectedDay}" required></label>
+        <label class="field">结束日期<input type="date" name="endDate" min="${selectedDay}" value="${selectedDay}" required></label>
+      </div>
+      <label class="field">安排哪几天<select name="dayMode">
+        <option value="all">每天</option><option value="weekday">工作日（周一至周五）</option>
+        <option value="weekend">周六和周日</option><option value="custom">自选星期</option></select></label>
+      <fieldset id="custom-weekdays" class="plan-fieldset" hidden><legend>选择星期</legend><div class="weekday-options">${weekdays.map((day,index) =>
+        `<label class="weekday-option"><input type="checkbox" name="weekdays" value="${(index+1)%7}" checked aria-label="周${day}"><span>${day}</span></label>`).join('')}</div></fieldset>`;
+  return `${!item && templateOptions ? `<label class="field">班次模板<select id="shift-template-select"><option value="">手动安排</option>${templateOptions}</select></label>` : ''}
+    ${dates}
+    ${shiftFields(item?.segments || template?.segments)}
+    <fieldset class="plan-fieldset"><legend>人员</legend>${item ? `<strong>${esc(members[0]?.name)}</strong><input type="hidden" name="employeeIds" value="${esc(selectedMember)}">` :
+      `<div class="employee-options">${members.map(e => `<label class="check-option"><input type="checkbox" name="employeeIds" value="${esc(e.id)}" ${e.id === selectedMember ? 'checked' : ''}><span>${esc(e.name)}</span><small>${esc(e.department)}</small></label>`).join('')}</div>`}
+    </fieldset>
+    <details class="schedule-options" ${item?.note ? 'open' : ''}><summary>备注与覆盖选项</summary>
+      <label class="field">备注<textarea name="note" maxlength="200">${esc(item?.note || '')}</textarea></label>
+      ${item ? '' : '<label class="overwrite-label"><input type="checkbox" name="overwrite">覆盖所选日期中尚未打卡的排班</label>'}
+    </details>`;
+}
+function selectedScheduleDates(form, item) {
+  const start = form.get('startDate'), end = item ? start : form.get('endDate');
+  if (!start || !end || start > end) throw new Error('请确认开始日期和结束日期');
+  const days = (Date.parse(`${end}T12:00:00Z`) - Date.parse(`${start}T12:00:00Z`)) / 86400000;
+  if (!Number.isFinite(days) || days > 365) throw new Error('每次最多安排 366 天，请缩小日期范围');
+  const mode = form.get('dayMode');
+  const custom = form.getAll('weekdays').map(Number);
+  const allowed = mode === 'weekday' ? [1,2,3,4,5] : mode === 'weekend' ? [0,6] : mode === 'custom' ? custom : [0,1,2,3,4,5,6];
+  const dates = Array.from({length:days+1},(_,index) => addDays(start,index))
+    .filter(date => allowed.includes(new Date(`${date}T12:00:00Z`).getUTCDay()));
+  if (!dates.length) throw new Error('这个日期范围没有符合条件的日期，请调整日期或安排哪几天');
+  return dates;
 }
 async function openReminders() {
   ui.drawer = {type:'reminders'};const editing = ui.drawer;
@@ -346,30 +469,34 @@ async function testReminder(button) {
   catch (error) {if (ui.drawer === editing) target.textContent = error.message;}
   finally {if (ui.drawer === editing) button.disabled = false;}
 }
-function openDrawer(type, item = null, employeeId = '', date = ui.db.today) {
+function openDrawer(type, item = null, employeeId = '', date = ui.db.today, template = null) {
   if (!isAdmin() || (['location','template','employee','group','access'].includes(type) && !isOrgAdmin())) return;
   if (type === 'schedule' && employeeId && !employeeById(employeeId)?.manageable) return;
   if (type === 'schedule' && !item && schedulePrerequisite()) {const missing = schedulePrerequisite();toast(missing.text,true);navigate(missing.view);return;}
   const locked = type === 'schedule' && item && (hasPunches(item) || employeeById(item.employeeId)?.disabled || !activeLocations().length);
-  ui.drawer = {type,item,employeeId,date};
+  const reschedule = locked && hasPunches(item) && !employeeById(item.employeeId)?.disabled &&
+    item.segments.every(segment => activeLocations().some(location => location.id === segment.locationId));
+  ui.drawer = {type,item,employeeId,date,reschedule};
   const title = type === 'group' ? item ? '考勤组设置' : '新增考勤组' : type === 'access' ? '成员考勤设置' : type === 'schedule' ? locked ? '查看排班' : item ? '编辑排班' : '新增排班' : type === 'template' ? item ? '编辑班次模板' : '新增班次模板' : type === 'location' ? item ? '编辑考勤地点' : '新增考勤地点' : item ? '编辑员工资料' : '新增员工';
   document.querySelector('#drawer-title').textContent = title;
   document.querySelector('#drawer-eyebrow').textContent = title;
   document.querySelector('#form-error').textContent = '';
   const body = document.querySelector('#drawer-body');
   if (locked) {
-    const reason = hasPunches(item) ? '已有打卡记录。删除排班会保留历史结果，并取消还未到期的打卡。' : '当前成员或考勤地点不可用于重新排班。';
+    const reason = hasPunches(item) ? '原日期的打卡记录和到期结果会保留。删除或改期后，剩余打卡与提醒会取消。' : '当前成员或考勤地点不可用于重新排班。';
     body.innerHTML = `<p><strong>${esc(employeeById(item.employeeId)?.name)}</strong> · ${esc(item.date)}</p>
       <ul class="schedule-details">${item.segments.map(segment => `<li>${esc(segment.start)}–${esc(segment.end)} · ${esc(locationById(segment.locationId)?.name || '地点不可用')}</li>`).join('')}</ul>
-      ${item.note ? `<p>${esc(item.note)}</p>` : ''}<p class="field-hint">${reason}</p>`;
+      ${item.note ? `<p>${esc(item.note)}</p>` : ''}<p class="field-hint">${reason}</p>
+      ${reschedule ? `<label class="field reschedule-date">改到其他日期<input type="date" name="startDate" required></label>
+        <input type="hidden" name="employeeIds" value="${esc(item.employeeId)}">` : ''}`;
   } else if (type === 'schedule') {
-    const selectedEmployee = item?.employeeId || employeeId;
-    const selectedDate = item?.date || date;
-    body.innerHTML = `<div class="field"><span class="field-label">选择员工<span class="required">*</span></span><div class="employee-options">${ui.db.employees.filter(e => e.manageable && !e.disabled && (item || !ui.group || e.groupId === ui.group)).map(employee => `<label class="check-option"><input type="checkbox" name="employeeIds" value="${esc(employee.id)}" ${selectedEmployee === employee.id ? 'checked' : ''} ${item && selectedEmployee !== employee.id ? 'disabled' : ''}><span>${esc(employee.name)}</span><small>${esc(employee.department || employee.employeeNo)}</small></label>`).join('')}</div><small>可一次为多位员工安排相同的时段和地点。</small></div><div class="field-grid"><label class="field"><span class="field-label">开始日期<span class="required">*</span></span><input type="date" name="startDate" value="${selectedDate}" required ${item ? 'readonly' : ''}></label><label class="field"><span class="field-label">结束日期<span class="required">*</span></span><input type="date" name="endDate" value="${selectedDate}" required ${item ? 'readonly' : ''}></label></div>${!item ? `<div class="field"><span class="field-label">应用到星期</span><div class="weekday-options">${weekdays.map((day,index) => `<label class="weekday-option"><input type="checkbox" name="weekdays" value="${(index+1)%7}" checked><span>${day}</span></label>`).join('')}</div></div>` : ''}<div class="field"><span class="field-label">使用班次模板</span><div class="template-apply"><select id="shift-template-select" aria-label="选择班次模板"><option value="">选择模板（可选）</option>${(ui.db.shiftTemplates || []).map(template => `<option value="${esc(template.id)}">${esc(template.name)}</option>`).join('')}</select><button type="button" class="button" data-action="apply-template">应用班次</button></div><small>替换工作时间，地点按原顺序保留，请逐段确认。</small></div><div class="form-section-title"><span>工作时段与地点<span class="required">*</span></span><small>各时段不可重叠</small></div><div id="segment-list">${(item?.segments || [{start:'09:00',end:'12:00',locationId:activeLocations()[0].id},{start:'13:30',end:'18:00',locationId:activeLocations()[0].id}]).map(segment => segmentRow(segment)).join('')}</div><button type="button" class="text-button" data-action="add-segment">${icon('plus')}增加工作时段</button><p class="field-hint" style="margin:12px 0 22px">跨园区时，为上午与下午分别选择地点；全天固定地点可以设置为一个时段。</p><label class="field"><span class="field-label">备注</span><textarea name="note" maxlength="200" placeholder="例如：下午前往 B 园区办公">${esc(item?.note || '')}</textarea></label>${!item ? '<label class="overwrite-label"><input type="checkbox" name="overwrite"><span>覆盖所选员工在这些日期已有的排班<br><small class="muted">不勾选时，如有已有排班将停止保存。</small></span></label>' : '<div class="info-banner">如已有打卡记录，可删除原排班并重新安排。</div>'}`;
+    body.innerHTML = scheduleForm(item, employeeId, date, template);
   } else if (type === 'template') {
-    body.innerHTML = `<label class="field"><span class="field-label">班次名称<span class="required">*</span></span><input name="name" required maxlength="80" value="${esc(item?.name || '')}" placeholder="例如：标准日班 / 上午班"></label><div class="form-section-title"><span>工作时段<span class="required">*</span></span><small>同一天内，各时段不可重叠</small></div><div id="segment-list">${(item?.segments || [{start:'09:00',end:'12:00'},{start:'13:30',end:'18:00'}]).map(segment => segmentRow(segment,false)).join('')}</div><button type="button" class="text-button" data-action="add-segment">${icon('plus')}增加工作时段</button><p class="field-hint" style="margin:12px 0 22px">班次模板只保存时间，打卡地点在个人排班中设置。</p><label class="field"><span class="field-label">备注</span><textarea name="note" maxlength="500" placeholder="班次说明">${esc(item?.note || '')}</textarea></label>`;
+    body.innerHTML = `<label class="field">班次名称<input name="name" required maxlength="80" value="${esc(item?.name || '')}" placeholder="例如：园区日班"></label>
+      ${shiftFields(item?.segments)}
+      <label class="field">备注<textarea name="note" maxlength="500">${esc(item?.note || '')}</textarea></label>`;
   } else if (type === 'group') {
-    body.innerHTML = `<label class="field">考勤组名称<input name="name" required maxlength="80" value="${esc(item?.name || '')}" placeholder="例如：研发园区考勤组"></label><div class="field"><span class="field-label">组管理员</span><div class="employee-options">${activeEmployees().map(e => `<label class="check-option"><input type="checkbox" name="adminIds" value="${esc(e.id)}" ${item?.adminIds.includes(e.id) ? 'checked' : ''}><span>${esc(e.name)}</span><small>${esc(e.department || '')}</small></label>`).join('')}</div><small>可管理本组成员、排班、记录与统计。组织管理员始终可以管理全部组。</small></div>`;
+    body.innerHTML = `<label class="field">考勤组名称<input name="name" required maxlength="80" value="${esc(item?.name || '')}" placeholder="例如：研发园区考勤组"></label><div class="field"><span class="field-label">组长</span><div class="employee-options">${activeEmployees().filter(e => !e.disabled && (e.groupId === item?.id || item?.adminIds.includes(e.id))).map(e => `<label class="check-option"><input type="checkbox" name="adminIds" value="${esc(e.id)}" ${item?.adminIds.includes(e.id) ? 'checked' : ''}><span>${esc(e.name)}</span><small>${esc(e.department || '')}</small></label>`).join('')}</div><small>组长可查看本组打卡情况和管理本组排班。请先把成员加入该组。</small></div>`;
   } else if (type === 'access') {
     body.innerHTML = `<p><strong>${esc(item.name)}</strong> · ${esc(item.department || '组织成员')}</p><label class="field">所属考勤组<select name="groupId" required>${groupOptions(item.groupId)}</select></label><label class="field">用户角色<select name="role" ${item.bootstrapAdmin ? 'disabled' : ''}>${Object.entries(roleLabels).map(([value,label]) => `<option value="${value}" ${item.role === value ? 'selected' : ''}>${label}</option>`).join('')}</select>${item.bootstrapAdmin ? '<small>初始组织管理员由服务器配置保留。</small>' : ''}</label><div class="field" id="managed-groups-field" ${item.role === 'group_admin' ? '' : 'hidden'}><span class="field-label">负责的考勤组</span><div class="employee-options">${ui.db.groups.map(g => `<label class="check-option"><input type="checkbox" name="managedGroupIds" value="${esc(g.id)}" ${g.adminIds.includes(item.id) ? 'checked' : ''}><span>${esc(g.name)}</span></label>`).join('')}</div><small>考勤组管理员至少负责一个组。</small></div>`;
   } else if (type === 'location') {
@@ -380,7 +507,8 @@ function openDrawer(type, item = null, employeeId = '', date = ui.db.today) {
   }
   const removeLabel = item && (type === 'schedule' ? '删除排班' : type === 'template' ? '删除班次' : '');
   const remove = removeLabel ? `<button type="button" class="button danger delete-button" data-action="remove-${type}">${removeLabel}</button>` : '';
-  const save = locked ? '' : `<button type="submit" class="button primary" id="save-button">保存${type === 'schedule' ? '排班' : type === 'template' ? '班次' : type === 'location' ? '地点' : type === 'group' || type === 'access' ? '设置' : '员工'}</button>`;
+  const save = reschedule ? '<button type="submit" class="button primary" id="save-button">确认改期</button>' :
+    locked ? '' : `<button type="submit" class="button primary" id="save-button">保存${type === 'schedule' ? '排班' : type === 'template' ? '班次' : type === 'location' ? '地点' : type === 'group' || type === 'access' ? '设置' : '员工'}</button>`;
   document.querySelector('#drawer-footer').innerHTML = `${remove}<button type="button" class="button" data-action="close-drawer">${locked ? '关闭' : '取消'}</button>${save}`;
   drawer.showModal();drawer.scrollTop = 0;
   if (type === 'location') {
@@ -393,7 +521,7 @@ async function saveDrawer(event) {
   event.preventDefault();
   if (ui.busy || !ui.drawer || ui.drawer.type === 'remove') return;
   const form = new FormData(event.target);
-  const {type,item} = ui.drawer;const guided = ui.guided;
+  const {type,item,reschedule} = ui.drawer;const guided = ui.guided;
   const button = document.querySelector('#save-button');
   if (!button || button.disabled) return;
   ui.busy = true;button.disabled = true;document.querySelector('#form-error').textContent = '';
@@ -409,19 +537,13 @@ async function saveDrawer(event) {
     } else if (type === 'schedule') {
       const employeeIds = form.getAll('employeeIds');
       if (!employeeIds.length) throw new Error('请至少选择一位员工');
-      const start = form.get('startDate'), end = form.get('endDate');
-      if (start > end) throw new Error('结束日期不能早于开始日期');
-      const days = (new Date(`${end}T12:00:00Z`) - new Date(`${start}T12:00:00Z`)) / 86400000;
-      if (days > 365) throw new Error('每次最多安排 366 天，请缩小日期范围');
-      const selectedWeekdays = form.getAll('weekdays').map(Number);
-      const dates = [];
-      for (let i=0;i<=days;i++) {const date = addDays(start,i);if (item || selectedWeekdays.includes(new Date(`${date}T12:00:00Z`).getUTCDay())) dates.push(date);}
-      if (!dates.length) throw new Error('日期范围内没有选中的星期，请调整选择');
-      const segments = [...document.querySelectorAll('.segment-row')].map(row => ({start:row.querySelector('.segment-start').value,end:row.querySelector('.segment-end').value,locationId:row.querySelector('.segment-location').value}));
-      const result = await api('/api/schedules',{employeeIds,dates,segments,note:form.get('note').trim(),overwrite:!!item || form.has('overwrite')});
+      const dates = selectedScheduleDates(form,item);
+      const result = await api('/api/schedules',{employeeIds,dates,segments:reschedule ? item.segments : readSegments(),
+        note:reschedule ? (item.note || '') : form.get('note').trim(),
+        ...(item ? {replaceScheduleId:item.id} : {overwrite:form.has('overwrite')})});
       toast(`已保存 ${result.count || dates.length*employeeIds.length} 份个人排班`);
     } else if (type === 'template') {
-      const segments = [...document.querySelectorAll('.segment-row')].map(row => ({start:row.querySelector('.segment-start').value,end:row.querySelector('.segment-end').value}));
+      const segments = readSegments();
       await api(`/api/shift-templates${item ? `/${encodeURIComponent(item.id)}` : ''}`,{name:form.get('name').trim(),note:form.get('note').trim(),segments},item ? 'PATCH' : 'POST');
       toast('班次模板已保存');
     } else {
@@ -434,7 +556,7 @@ async function saveDrawer(event) {
       toast(type === 'employee' ? '员工资料已保存' : '考勤地点已保存');
     }
     closeDrawer();await refresh();
-    if (type === 'schedule') ui.week = monday(form.get('startDate'));
+    if (type === 'schedule') {ui.week = monday(selectedScheduleDates(form,item)[0]);ui.scheduleTab = 'personal';}
     if (guided) navigate('overview');else render();
   } catch (error) {document.querySelector('#form-error').textContent = error.message;}
   finally {ui.busy = false;button.disabled = false;}
@@ -613,6 +735,10 @@ function navigate(view) {if (!views[view]) return;ui.view = view;ui.search = '';
 document.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]');if (!button || button.disabled) return;
   const action = button.dataset.action;
+  if (ui.previewRole && ['checkin','quick-punch','workflow-calendar','test-reminder','confirm-remove'].includes(action)) {
+    toast('角色预览仅供查看。切回组织管理员后再操作。',true);
+    return;
+  }
   switch (action) {
     case 'quick-punch':await quickPunch();break;
     case 'close-punch':closePunch();break;
@@ -625,6 +751,8 @@ document.addEventListener('click', async event => {
     case 'new-group':openDrawer('group');break;
     case 'edit-group':openDrawer('group',ui.db.groups.find(g => g.id === button.dataset.id));break;
     case 'edit-access':openDrawer('access',employeeById(button.dataset.id));break;
+    case 'leader-records':
+      ui.group = button.dataset.id;ui.recordTab = 'flow';ui.recordFrom = ui.recordTo = ui.db.today;ui.recordEmployee = ui.recordStatus = '';navigate('records');break;
     case 'group-members':ui.guided = false;ui.group = button.dataset.id;navigate('employees');break;
     case 'group-add-members':ui.guided = false;ui.group = button.dataset.id;navigate('employees');await openDirectory();break;
     case 'open-directory':await openDirectory();break;
@@ -634,13 +762,16 @@ document.addEventListener('click', async event => {
     case 'load-summary':await loadAttendanceSummary();break;
     case 'new-template':openDrawer('template');break;
     case 'edit-template':openDrawer('template',(ui.db.shiftTemplates || []).find(item => item.id === button.dataset.id));break;
-    case 'apply-template':applyTemplate();break;
+    case 'assign-template': {
+      const template = ui.db.shiftTemplates.find(t => t.id === button.dataset.id);
+      if (template) openDrawer('schedule',null,'',ui.db.today,template);
+      break;
+    }
     case 'remove-template': {const item = ui.drawer?.item;if (item) openRemoval('shift-templates',item,'删除班次',`删除「${item.name}」？已保存的排班继续有效。`);break;}
     case 'remove-location': {const item = locationById(button.dataset.id);if (item) openRemoval('locations',item,'删除考勤地点',`从可用地点中移除「${item.name}」？历史排班和打卡记录会保留地点信息。`);break;}
     case 'remove-employee': {const item = employeeById(button.dataset.id);if (item) openRemoval('employees',item,'移除考勤成员',`移除「${item.name}」后，将停止其考勤访问和提醒，并取消从今天起尚无打卡记录的排班。历史记录保留，飞书通讯录中的成员身份不受影响。`,'确认移除');break;}
     case 'remove-group': {const item = ui.db.groups.find(g => g.id === button.dataset.id);if (item) openRemoval('groups',item,'删除考勤组',`删除「${item.name}」？仅可删除没有成员、排班和历史记录的组。`);break;}
     case 'confirm-remove':await confirmRemoval(button);break;
-    case 'logout':try {await api('/auth/logout',{});location.href='/?signedOut=1#checkin';} catch (error) {toast(error.message,true);}break;
     case 'previous-week':ui.week = addDays(ui.week,-7);renderSchedules();break;
     case 'next-week':ui.week = addDays(ui.week,7);renderSchedules();break;
     case 'this-week':ui.week = monday(ui.db.today);renderSchedules();break;
@@ -651,7 +782,15 @@ document.addEventListener('click', async event => {
     case 'new-employee':openDrawer('employee');break;
     case 'edit-employee':openDrawer('employee',employeeById(button.dataset.id));break;
     case 'close-drawer':if (!ui.busy) closeDrawer();break;
-    case 'add-segment':{const rows = document.querySelectorAll('.segment-row');if (rows.length >= 12) return toast('每个工作日最多安排 12 个时段',true);document.querySelector('#segment-list').insertAdjacentHTML('beforeend',segmentRow({start:'18:00',end:'20:00',locationId:activeLocations()[0]?.id},ui.drawer?.type !== 'template'));break;}
+    case 'add-segment': {
+      const rows = readSegments();
+      if (rows.length >= 12) return toast('每天最多安排 12 个时段',true);
+      const previous = rows.at(-1);
+      const end = previous?.end || '18:00';
+      document.querySelector('#segment-list').insertAdjacentHTML('beforeend',segmentRow({start:end,end:'',locationId:previous?.locationId}));
+      document.querySelector('#segment-list .segment-row:last-child .segment-end').focus();
+      break;
+    }
     case 'remove-segment':if (document.querySelectorAll('.segment-row').length <= 1) return toast('请至少保留一个工作时段',true);button.closest('.segment-row').remove();break;
     case 'remove-schedule': {
       const item = ui.drawer?.item;
@@ -669,6 +808,20 @@ document.addEventListener('click', async event => {
 });
 document.addEventListener('input', event => {if (event.target.id === 'directory-search') {ui.directorySearch = event.target.value;renderDirectoryUsers();}if (event.target.id === 'schedule-search') {ui.search = event.target.value;document.querySelector('#schedule-grid').innerHTML = scheduleTable();}if (event.target.id === 'employee-search') {ui.search = event.target.value;document.querySelector('#employee-grid').innerHTML = employeeRows();labelTableCells();}});
 document.addEventListener('change', event => {
+  if (event.target.matches('select[data-role-preview]')) {void switchPreview(event.target.value);return;}
+  if (event.target.id === 'shift-template-select') applyTemplate(event.target.value);
+  if (event.target.name === 'dayMode') document.querySelector('#custom-weekdays').hidden = event.target.value !== 'custom';
+  if (event.target.name === 'startDate' && ui.drawer?.type === 'schedule') {
+    const end = drawer.querySelector('[name="endDate"]');
+    if (end) {
+      end.min = event.target.value;
+      if (end.value < end.min) end.value = end.min;
+    }
+  }
+  if (event.target.id === 'jump-schedule-date' && event.target.value) {
+    ui.week = monday(event.target.value);renderSchedules();
+  }
+
   if (event.target.name === 'role' && ui.drawer?.type === 'access') document.querySelector('#managed-groups-field').hidden = event.target.value !== 'group_admin';
   if (event.target.id === 'group-filter') {ui.group = event.target.value;render();}
   if (event.target.id === 'directory-department') {ui.directoryDepartment = event.target.value;renderDirectoryUsers();}

@@ -53,9 +53,11 @@ const location = { name: '测试园区', address: '测试地址', latitude: 40, 
 test('Shift templates persist independently of applied schedules, and summaries validate date ranges', async t => {
   const { app } = await fixture(t);
   const before = await app.state();
-  const input = { name: '午后班', segments: [{ start: '13:00', end: '17:00' }], note: '' };
+  const input = { name: '午后班', segments: [{ start: '13:00', end: '17:00',locationId:before.locations[0].id }], note: '' };
   const created = await (await app.request('/api/shift-templates', { method: 'POST', data: input })).json();
   assert.ok(created.template.id);
+  assert.deepEqual(created.template.segments,input.segments);
+  assert.equal((await app.request('/api/shift-templates', { method: 'POST', data: { ...input, segments: [{...input.segments[0],locationId:'unknown'}] } })).status, 400);
   assert.equal((await app.request('/api/shift-templates', { method: 'POST', data: input })).status, 409);
   assert.equal((await app.request(`/api/shift-templates/${created.template.id}`, { method: 'PATCH', data: { ...input, name: '午后短班' } })).status, 200);
   assert.equal((await app.state()).shiftTemplates.find(s => s.id === created.template.id).name, '午后短班');
@@ -120,7 +122,16 @@ test('Batch schedules are atomic, require explicit overwrite and can be deleted'
   assert.equal((await app.request('/api/schedules', { method: 'POST', data: { ...data, overwrite: true, note: '更新' } })).status, 200);
   const updated = (await app.state()).schedules.find(s => s.date === data.dates[0]);
   assert.equal(updated.note, '更新');
-  assert.equal((await app.request(`/api/schedules/${updated.id}`, { method: 'DELETE' })).status, 200);
+  const edit = {employeeIds:[updated.employeeId],segments:data.segments,dates:[data.dates[1]],replaceScheduleId:updated.id};
+  assert.equal((await app.request('/api/schedules',{method:'POST',data:edit})).status,409);
+  assert.ok((await app.state()).schedules.some(s => s.id === updated.id));
+  const target = '2040-01-07';
+  assert.equal((await app.request('/api/schedules',{method:'POST',data:{...edit,dates:[target]}})).status,200);
+  const changed = (await app.state()).schedules.filter(s => s.employeeId === updated.employeeId);
+  assert.ok(!changed.some(s => s.date === updated.date));
+  const moved = changed.find(s => s.date === target);
+  assert.ok(moved);
+  assert.equal((await app.request(`/api/schedules/${moved.id}`, { method: 'DELETE' })).status, 200);
   assert.equal((await app.request(`/api/schedules/${updated.id}`, { method: 'DELETE' })).status, 404);
 });
 
@@ -343,6 +354,18 @@ test('Three roles enforce group boundaries, verified directory imports and immed
     return {...headers,Cookie:response.headers.get('set-cookie').split(';')[0]};
   };
   const org = await login('admin'), manager = await login('manager'), worker = await login('worker');
+  const asGroup = {...org,'X-Attendance-Preview':'group:g2'};
+  const asMember = {...org,'X-Attendance-Preview':'user'};
+  const groupPreview = await (await app.request('/api/state',{headers:asGroup})).json();
+  assert.deepEqual(groupPreview.session.managedGroupIds,['g2']);
+  assert.equal(groupPreview.session.role,'group_admin');
+  assert.deepEqual(groupPreview.records.map(r => r.employeeId),['other']);
+  const memberPreview = await (await app.request('/api/state',{headers:asMember})).json();
+  assert.equal(memberPreview.session.role,'user');
+  assert.deepEqual(memberPreview.employees.map(e => e.id),['admin']);
+  assert.deepEqual(memberPreview.records,[]);
+  assert.equal((await app.request('/api/state',{headers:{...worker,'X-Attendance-Preview':'group:g2'}})).status,403);
+  assert.equal((await app.request('/api/schedules/s-other',{method:'DELETE',headers:asGroup})).status,403);
   const personal = {checkinEnabled:true,beforeMinutes:30};
   assert.equal((await app.request('/api/reminders',{headers})).status,401);
   assert.equal((await app.request('/api/reminders',{headers:worker,method:'PUT',data:personal})).status,200);
@@ -418,6 +441,17 @@ test('Three roles enforce group boundaries, verified directory imports and immed
   assert.equal((await app.request('/api/records.csv',{headers:manager})).status,403);
   assert.equal((await call(manager,'/api/schedules',{...schedule,employeeIds:['worker']})).status,403);
   assert.equal((await call(org,'/api/employees',{...employee,openId:'ou_forged'})).status,403,'production bindings must come from the organization');
+  const moveWithHistory = {employeeIds:['other'],dates:['2040-01-06'],segments:schedule.segments,replaceScheduleId:'s-other'};
+  assert.equal((await call(org,'/api/schedules',moveWithHistory)).status,200);
+  const rescheduled = await stateAs(org);
+  assert.ok(!rescheduled.schedules.some(s => s.id === 's-other'));
+  assert.ok(rescheduled.schedules.some(s => s.employeeId === 'other' && s.date === '2040-01-06'));
+  assert.equal(rescheduled.records.find(r => r.id === 'r-other').scheduleId,'s-other');
+  assert.ok(JSON.parse(await readFile(file,'utf8')).schedules.find(s => s.id === 's-other').cancelledAt);
+  assert.equal((await call(org,'/api/employees/worker/access',{groupId:'g2',role:'group_admin',managedGroupIds:['g2']},'PATCH')).status,200);
+  const movedMember = await stateAs(org);
+  assert.equal(movedMember.schedules.find(s => s.id === 's-worker').groupId,'g1','recorded history remains with the original group');
+  assert.equal(movedMember.schedules.find(s => s.employeeId === 'worker' && s.date === '2041-01-05').groupId,'g2');
 });
 
 

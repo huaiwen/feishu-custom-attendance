@@ -12,9 +12,9 @@ const fixture = (segments = [morning]) => ({ employees: [{ id: 'employee-a', nam
   schedules: [{ id: 'schedule-a', employeeId: 'employee-a', date: day, segments }], records: [] });
 const summarize = (state, now) => attendanceSummary(state, { from: day, to: day }, now);
 
-test('Shift templates sort times, trim text and discard locations and extra fields', () => {
+test('Shift templates keep each time and location while discarding extra fields', () => {
   const input = { name: ' 两段班 ', segments: [afternoon, morning], note: ' 备注 ', id: 'ignored', employeeId: 'ignored' };
-  assert.deepEqual(validateShiftTemplate(input), { name: '两段班', note: '备注', segments: [{ start: '09:00', end: '12:00' }, { start: '13:00', end: '18:00' }] });
+  assert.deepEqual(validateShiftTemplate(input), { name: '两段班', note: '备注', segments: [{ start: '09:00', end: '12:00', locationId: 'office' }, { start: '13:00', end: '18:00', locationId: 'other-office' }] });
   assert.equal(input.segments[0], afternoon);
   assert.equal(validateShiftTemplate({ name: '相邻班', segments: [{ start: '12:00', end: '18:00' }, morning] }).note, '');
 });

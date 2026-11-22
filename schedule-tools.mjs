@@ -3,7 +3,7 @@ import { DomainError, clockParts } from './domain.mjs';
 const TIME = /^(?:[01]\d|2[0-3]):[0-5]\d$/;
 const ZERO_COUNTS = { expectedCount: 0, punchedCount: 0, normalCount: 0, lateCount: 0, earlyCount: 0, missingCount: 0, pendingCount: 0 };
 
-export function validateShiftTemplate(input) {
+export function validateShiftTemplate(input, locations) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw new DomainError('班次模板必须是对象');
   const name = typeof input.name === 'string' ? input.name.trim() : '';
   if (!name || name.length > 80) throw new DomainError('模板名称须为 1 至 80 个字符');
@@ -15,7 +15,11 @@ export function validateShiftTemplate(input) {
         || typeof segment.start !== 'string' || !TIME.test(segment.start)
         || typeof segment.end !== 'string' || !TIME.test(segment.end)) throw new DomainError('时段时间格式应为 HH:mm（00:00–23:59）');
     if (segment.start >= segment.end) throw new DomainError('时段结束时间必须晚于开始时间，跨天班次请分成两天设置');
-    return { start: segment.start, end: segment.end };
+    if (segment.locationId !== undefined && (typeof segment.locationId !== 'string' || !segment.locationId ||
+        locations && !locations.some(location => location.id === segment.locationId && !location.archived))) {
+      throw new DomainError('请选择可用的考勤地点');
+    }
+    return { start: segment.start, end: segment.end, ...(segment.locationId ? { locationId: segment.locationId } : {}) };
   }).sort((a, b) => a.start.localeCompare(b.start));
   if (segments.some((segment, index) => index > 0 && segments[index - 1].end > segment.start)) throw new DomainError('模板中的时段不能重叠');
   return { name, segments, note: note.trim() };

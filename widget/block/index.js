@@ -30,6 +30,8 @@ function loadAttendance() {
               day.remaining.forEach(p => { if (sites.indexOf(p.locationName) === -1) sites.push(p.locationName); });
               this.lastLoaded = Date.now();
               finish({ date: day.date, remaining: day.remaining.length, completed: day.completed, total: day.total,
+                leadGroup: day.leadership?.groupName || '',
+                leadRole: day.leadership?.groupCount > 1 ? '考勤组长 · 共 ' + day.leadership.groupCount + ' 组' : '考勤组长',
                 punches: (day.punches || day.remaining).slice(0, 2).map(p => ({
                   label: p.time + ' ' + (p.kind === 'in' ? '上班' : '下班') + ' · ' + p.locationName,
                   status: p.done ? '已打卡' : p.expired ? '未完成' : '待打卡'
@@ -57,7 +59,7 @@ function loadAttendance() {
 }
 
 Block({
-  data: { loading: true, error: '', errorDetail: '', remaining: 0, completed: 0, total: 0, date: '', next: '', places: '', canPunch: false, expanded: false, punches: [] },
+  data: { loading: true, error: '', errorDetail: '', remaining: 0, completed: 0, total: 0, date: '', next: '', places: '', leadGroup: '', leadRole: '', canPunch: false, expanded: false, punches: [] },
   onLoad() { loadAttendance.call(this); },
   onReady() {
     this.resize = ({ height }) => { if (!this.destroyed) this.setData({ expanded: height >= 240 }); };

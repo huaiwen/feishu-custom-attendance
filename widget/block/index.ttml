@@ -4,7 +4,10 @@
     <view class="action retry" bindtap="refresh"><text class="action-label">重新加载</text></view>
   </view>
   <view class="state" tt:elif="{{loading}}"><text class="muted">正在读取你的今日安排…</text></view>
-  <view class="content {{expanded ? 'expanded' : ''}}" tt:else>
+  <view class="content {{expanded ? 'expanded' : ''}} {{leadGroup ? 'has-leader' : ''}}" tt:else>
+    <view class="leader-line" tt:if="{{leadGroup}}">
+      <text class="leader-group">{{leadGroup}}</text><text class="leader-role">{{leadRole}}</text>
+    </view>
     <view class="progress">
       <view class="count">
         <text class="number">{{remaining}}</text>

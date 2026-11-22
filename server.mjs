@@ -9,7 +9,7 @@ import { validateShiftTemplate, attendanceSummary } from './schedule-tools.mjs';
 import { sessionFor, managesGroup, requireGroup, visibleState, validateGroup, migrateGroups } from './access.mjs';
 
 import { initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, createReminderDispatcher, reminderPunch, dailyAttendance } from './reminders.mjs';
-import { workflowConfiguration, initializeWorkflows, createWorkflows, approvalArchive } from './workflows.mjs';
+import { workflowConfiguration, initializeWorkflows, createWorkflows, approvalArchive, workflowLedgerUrl } from './workflows.mjs';
 import { createFeishuWorkflowApi, startFeishuEvents } from './feishu-workflows.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
@@ -129,6 +129,19 @@ function csvCell(value) {
   return `"${text.replaceAll('"', '""')}"`;
 }
 
+function assignGroup(state, employee, groupId, today) {
+  const previous = employee.groupId;
+  employee.groupId = groupId;
+  if (!previous || previous === groupId) return;
+  const punched = new Set(state.records.map(record => record.scheduleId));
+  for (const schedule of state.schedules) {
+    if (schedule.employeeId === employee.id && schedule.groupId === previous &&
+        schedule.date >= today && !schedule.cancelledAt && !punched.has(schedule.id)) {
+      schedule.groupId = groupId;
+    }
+  }
+}
+
 export function createAttendanceServer({ env = process.env, dataFile } = {}) {
   const config = configuration(env);
   const file = resolve(dataFile || join(ROOT, 'data', config.mode === 'demo' ? 'demo.json' : 'attendance.json'));
@@ -169,7 +182,24 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       for (const [id, pending] of oauthStates) if (pending.expires < now) oauthStates.delete(id);
       const auth = config.mode === 'demo' ? {} : sessions.get(cookie(req, 'attendance_session'));
       // Resolve employee bindings on every request so account changes take effect immediately.
-      const currentSession = () => auth && sessionFor(state, auth.openId, config.adminOpenIds, config.mode === 'demo');
+      const actorSession = () => auth && sessionFor(state, auth.openId, config.adminOpenIds, config.mode === 'demo');
+      const preview = req.headers['x-attendance-preview'];
+      let previewRole, previewGroup;
+      if (preview !== undefined) {
+        if (actorSession()?.role !== 'org_admin' || req.method !== 'GET') throw new DomainError('角色预览仅供组织管理员查看', 403);
+        if (preview === 'user') previewRole = 'user';
+        else if (typeof preview === 'string' && preview.startsWith('group:') && state.groups.some(g => g.id === preview.slice(6))) {
+          previewRole = 'group_admin';
+          previewGroup = preview.slice(6);
+        } else throw new DomainError('请选择有效的预览角色');
+      }
+      const currentSession = () => {
+        const actor = actorSession();
+        if (!previewRole) return actor;
+        if (actor?.role !== 'org_admin') return null;
+        const employeeId = actor.employeeId || (config.mode === 'demo' ? state.employees.find(e => !e.disabled)?.id : null);
+        return { ...actor, employeeId: employeeId || null, role: previewRole, managedGroupIds: previewGroup ? [previewGroup] : [] };
+      };
       const session = currentSession();
       const requireAuth = () => { if (!currentSession()) throw new DomainError('请先使用飞书登录', 401); };
       const requireAdmin = () => { requireAuth(); if (currentSession().role !== 'org_admin') throw new DomainError('此操作需要组织管理员权限', 403); };
@@ -199,7 +229,10 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         if (!employee || employee.disabled) throw new DomainError('尚未加入考勤或账号已停用，请联系组织管理员', 403);
         const today = clockParts(new Date(Date.now())).date;
         const day = dailyAttendance(state, employee.id, today, Date.now());
+        const led = state.groups.filter(group => group.adminIds.includes(employee.id));
+        const leadGroup = led.find(group => group.id === employee.groupId) || led[0];
         return json(200, { date: today, total: day.total, completed: day.completed,
+          leadership: leadGroup ? { groupName: leadGroup.name, groupCount: led.length } : null,
           punches: day.punches.map(({ time, kind, locationName, expired, done }) => ({ time, kind, locationName, expired, done })),
           remaining: day.remaining.map(({ time, kind, locationName, expired }) => ({ time, kind, locationName, expired })) });
       }
@@ -270,7 +303,10 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       }
       if (url.pathname === '/api/state' && req.method === 'GET') {
         requireAuth();
-        return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session, integration: { configured: config.mode === 'feishu', appId: config.appId || null, mapConfigured: Boolean(config.amapKey && config.amapSecurityCode) } });
+        return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session,
+          ...(actorSession()?.role === 'org_admin' ? { previewGroups: state.groups.map(({id,name}) => ({id,name})) } : {}),
+          integration: { configured: config.mode === 'feishu', appId: config.appId || null, mapConfigured: Boolean(config.amapKey && config.amapSecurityCode),
+            ledgerUrl: session.role === 'org_admin' ? workflowLedgerUrl(config) : null } });
       }
       if (url.pathname==='/api/workflows' && req.method==='GET') {
         requireAuth();return json(200,workflows.view(currentSession()));
@@ -370,7 +406,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       const templateMatch = url.pathname.match(/^\/api\/shift-templates(?:\/([^/]+))?$/);
       if (templateMatch && ((req.method === 'POST' && !templateMatch[1]) || (req.method === 'PATCH' && templateMatch[1]))) {
         requireAdmin();
-        const input = validateShiftTemplate(await readBody(req));
+        const input = validateShiftTemplate(await readBody(req), state.locations);
         requireAdmin();
         const id = templateMatch[1] || randomUUID();
         if (req.method === 'PATCH' && !state.shiftTemplates.some(t => t.id === id)) throw new DomainError('班次模板不存在', 404);
@@ -443,6 +479,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireManager();
         requireGroup(currentSession(), input.groupId, state);
         if (users.length !== input.openIds.length) throw new DomainError('部分成员不在应用的通讯录授权范围内，请刷新后重试', 403);
+        const today = clockParts().date;
         commit(next => {
           for (const user of users) {
             let employee = next.employees.find(e => e.openId === user.openId);
@@ -451,7 +488,8 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
               employee = { id: randomUUID(), employeeNo: '', openId: user.openId, orgAdmin: false };
               next.employees.push(employee);
             }
-            Object.assign(employee, { name: user.name, department: user.department, groupId: input.groupId, disabled: false, removed: false });
+            assignGroup(next, employee, input.groupId, today);
+            Object.assign(employee, { name: user.name, department: user.department, disabled: false, removed: false });
           }
         });
         return json(200, { count: users.length });
@@ -468,7 +506,9 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         if (!Array.isArray(input.managedGroupIds) || new Set(input.managedGroupIds).size !== input.managedGroupIds.length || input.managedGroupIds.some(id => !state.groups.some(g => g.id === id)) || (input.role === 'group_admin' && !input.managedGroupIds.length)) throw new DomainError('考勤组管理员须选择至少一个负责的组');
         if (config.adminOpenIds.includes(employee.openId) && input.role !== 'org_admin') throw new DomainError('初始组织管理员由服务器配置保留，不能在此撤销', 409);
         commit(next => {
-          Object.assign(next.employees.find(e => e.id === employee.id), { groupId: input.groupId, orgAdmin: input.role === 'org_admin' });
+          const assigned = next.employees.find(e => e.id === employee.id);
+          assignGroup(next, assigned, input.groupId, clockParts().date);
+          assigned.orgAdmin = input.role === 'org_admin';
           for (const group of next.groups) {
             group.adminIds = group.adminIds.filter(id => id !== employee.id);
             if (input.role === 'group_admin' && input.managedGroupIds.includes(group.id)) group.adminIds.push(employee.id);
@@ -539,15 +579,31 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       }
       if (url.pathname === '/api/schedules' && req.method === 'POST') {
         requireManager();
-        const input = validateScheduleBatch(await readBody(req), state);
+        const body = await readBody(req);
+        const input = validateScheduleBatch(body, state);
         for (const employeeId of input.employeeIds) requireGroup(currentSession(), state.employees.find(e => e.id === employeeId).groupId, state);
         const existing = state.schedules.filter(s => !s.cancelledAt && input.employeeIds.includes(s.employeeId) && input.dates.includes(s.date));
+        if (body.replaceScheduleId !== undefined) {
+          const original = state.schedules.find(s => s.id === body.replaceScheduleId && !s.cancelledAt);
+          if (!original) throw new DomainError('原排班已变动，请刷新后重试', 404);
+          requireGroup(currentSession(), original.groupId, state);
+          if (input.employeeIds.length !== 1 || input.employeeIds[0] !== original.employeeId || input.dates.length !== 1) {
+            throw new DomainError('修改已有排班时只能调整同一成员的一天');
+          }
+          if (existing.some(s => s.id !== original.id)) throw new DomainError('该成员在新日期已经有排班，请先处理那天的安排', 409);
+          if (!existing.length) existing.push(original);
+        }
         for (const schedule of existing) requireGroup(currentSession(), schedule.groupId, state);
-        if (existing.length && !input.overwrite) throw new DomainError(`有 ${existing.length} 条已有排班，请确认覆盖后重试`, 409);
-        if (existing.some(s => state.records.some(r => r.scheduleId === s.id))) throw new DomainError('所选排班已有打卡记录。请先删除旧排班，再新增排班。', 409);
+        if (existing.length && !input.overwrite && body.replaceScheduleId === undefined) throw new DomainError(`有 ${existing.length} 条已有排班，请确认覆盖后重试`, 409);
+        const punched = new Set(state.records.map(record => record.scheduleId));
+        const historical = existing.find(s => punched.has(s.id));
+        if (historical && (historical.id !== body.replaceScheduleId || historical.date === input.dates[0])) {
+          throw new DomainError('该排班已有打卡记录。可改到其他日期，原打卡记录会保留。', 409);
+        }
         commit(next => {
           const ids = new Set(existing.map(s => s.id));
-          next.schedules = next.schedules.filter(s => !ids.has(s.id));
+          next.schedules = next.schedules.filter(s => !ids.has(s.id) || s.id === historical?.id);
+          if (historical) next.schedules.find(s => s.id === historical.id).cancelledAt = new Date().toISOString();
           for (const employeeId of input.employeeIds) for (const date of input.dates) next.schedules.push({ id: randomUUID(), employeeId, groupId: next.employees.find(e => e.id === employeeId).groupId, date, segments: input.segments, note: input.note });
         });
         return json(200, { count: input.employeeIds.length * input.dates.length });

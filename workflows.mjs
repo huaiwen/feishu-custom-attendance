@@ -81,6 +81,11 @@ function enqueue(w, job) {
   if (done.length > 1000) {const discard = new Set(done.slice(0,done.length-1000).map(j=>j.id));w.jobs = w.jobs.filter(j=>!discard.has(j.id));}
 }
 
+export function workflowLedgerUrl(config) {
+  const { appToken, tableId } = config.workflows;
+  return appToken && tableId ? `https://feishu.cn/base/${encodeURIComponent(appToken)}?table=${encodeURIComponent(tableId)}` : null;
+}
+
 export function workflowView(state, session, config) {
   const w = initializeWorkflows(state), org = session.role === 'org_admin';
   const readable = r => org || r.employeeId === session.employeeId || session.managedGroupIds.includes(r.groupId);
@@ -92,7 +97,7 @@ export function workflowView(state, session, config) {
   return {enabled:config.workflows.enabled,requests,
     definitions:Object.fromEntries(Object.entries(config.workflows.definitions).map(([kind,d])=>[kind,d.id ? {url:approvalLink(d.id,{form:true}),desktopUrl:approvalLink(d.id,{form:true,desktop:true})} : null])),
     locations:state.locations.filter(l=>!l.archived).map(l=>({id:l.id,name:l.name})),
-    ...(org ? {status:{lastEventAt:w.lastEventAt || null,error:w.error || null,pending:w.jobs.filter(j=>j.status !== 'done').length,archived:Object.keys(w.archive).length},tableUrl:config.workflows.appToken ? `https://feishu.cn/base/${config.workflows.appToken}?table=${config.workflows.tableId}` : null} : {})};
+    ...(org ? {status:{lastEventAt:w.lastEventAt || null,error:w.error || null,pending:w.jobs.filter(j=>j.status !== 'done').length,archived:Object.keys(w.archive).length},tableUrl:workflowLedgerUrl(config)} : {})};
 }
 
 export function approvalArchive(r) {

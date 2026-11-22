@@ -22,7 +22,7 @@ test('Ordinary users get personal pages and cannot open management drawers throu
   assert.match(nodes.get('#main').innerHTML,/我的排班/);
   assert.doesNotMatch(nodes.get('#main').innerHTML,/data-action="new-schedule"|data-tab="templates"/);
   assert.doesNotMatch(nodes.get('#navigation').innerHTML,/人员管理|考勤组|考勤地点|飞书接入/);
-  assert.doesNotMatch(nodes.get('#navigation').innerHTML,/nav-more|nav-secondary/);
+  assert.match(nodes.get('#navigation').innerHTML,/data-action="reminders"/);
   runInContext("openDrawer('schedule');openDrawer('location');",context);
   assert.equal(runInContext('ui.drawer',context),null);
   runInContext("ui.view='groups';render();",context);
@@ -33,6 +33,8 @@ test('Group and organization administrators have different workspaces and author
   const manager = screen('group_admin');
   assert.deepEqual(manager.views,['overview','groups','employees','schedules','records','checkin','requests']);
   assert.doesNotMatch(manager.nodes.get('#navigation').innerHTML,/考勤地点|飞书接入/);
+  runInContext("ui.view='overview';render();",manager.context);
+  assert.match(manager.nodes.get('#main').innerHTML,/组长工作台[\s\S]*本人/);
   runInContext("openDrawer('access');openDrawer('location');openDrawer('group');",manager.context);
   assert.equal(runInContext('ui.drawer',manager.context),null);
   const org = screen('org_admin');
@@ -41,7 +43,7 @@ test('Group and organization administrators have different workspaces and author
   const nav=org.nodes.get('#navigation').innerHTML;
   assert.doesNotMatch(nav,/组织部门|企业工作台|工作空间/);
   assert.match(nav,/<summary[^>]*>[\s\S]*?更多<\/span><\/summary>/);
-  assert.equal((nav.split('<details')[0].match(/data-action="navigate"/g)||[]).length-(nav.split('<details')[0].match(/nav-secondary/g)||[]).length,4);
+  assert.equal((nav.split('<details')[0].match(/data-action="(?:navigate|reminders)"/g)||[]).length-(nav.split('<details')[0].match(/nav-secondary/g)||[]).length,4);
 });
 
 

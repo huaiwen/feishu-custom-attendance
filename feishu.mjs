@@ -194,3 +194,12 @@ export async function sendReminderMessage({ appId, appSecret, openId, card, uuid
   if (typeof data.data?.message_id !== 'string' || !data.data.message_id) throw new Error('飞书未返回提醒发送结果');
   return data.data.message_id;
 }
+
+export async function updateReminderCard({appId,appSecret,messageId,card,fetch=globalThis.fetch}) {
+  if (!/^om_[a-zA-Z0-9]+$/.test(messageId) || card?.schema!=='2.0' || card.config?.update_multi!==true || !Array.isArray(card.body?.elements) || !card.body.elements.length) throw new Error('卡片更新格式不正确');
+  const content=JSON.stringify(card);
+  if (Buffer.byteLength(content)>30*1024) throw new Error('提醒卡片内容过长');
+  const token=await tenantToken({appId,appSecret,fetch});
+  const options=json({content});options.method='PATCH';options.headers.Authorization=`Bearer ${token}`;
+  await request(fetch,`${openApi}/im/v1/messages/${messageId}`,options,'更新打卡卡片');
+}

@@ -18,10 +18,11 @@ function screen(role) {
 
 test('Ordinary users get personal pages and cannot open management drawers through UI handlers', () => {
   const {nodes,context,views} = screen('user');
-  assert.deepEqual(views,['checkin','schedules','records']);
+  assert.deepEqual(views,['checkin','schedules','requests','records']);
   assert.match(nodes.get('#main').innerHTML,/我的排班/);
   assert.doesNotMatch(nodes.get('#main').innerHTML,/data-action="new-schedule"|data-tab="templates"/);
   assert.doesNotMatch(nodes.get('#navigation').innerHTML,/人员管理|考勤组|考勤地点|飞书接入/);
+  assert.doesNotMatch(nodes.get('#navigation').innerHTML,/nav-more|nav-secondary/);
   runInContext("openDrawer('schedule');openDrawer('location');",context);
   assert.equal(runInContext('ui.drawer',context),null);
   runInContext("ui.view='groups';render();",context);
@@ -30,13 +31,16 @@ test('Ordinary users get personal pages and cannot open management drawers throu
 
 test('Group and organization administrators have different workspaces and authority controls', () => {
   const manager = screen('group_admin');
-  assert.deepEqual(manager.views,['overview','schedules','employees','groups','records','checkin']);
+  assert.deepEqual(manager.views,['overview','schedules','employees','groups','records','checkin','requests']);
   assert.doesNotMatch(manager.nodes.get('#navigation').innerHTML,/考勤地点|飞书接入/);
   runInContext("openDrawer('access');openDrawer('location');openDrawer('group');",manager.context);
   assert.equal(runInContext('ui.drawer',manager.context),null);
   const org = screen('org_admin');
   assert.ok(org.views.includes('locations') && org.views.includes('integration'));
   assert.match(org.nodes.get('#user-label').innerHTML,/组织管理员/);
+  const nav=org.nodes.get('#navigation').innerHTML;
+  assert.match(nav,/<summary[^>]*>[\s\S]*?更多<\/span><\/summary>/);
+  assert.equal((nav.split('<details')[0].match(/data-action="navigate"/g)||[]).length-(nav.split('<details')[0].match(/nav-secondary/g)||[]).length,4);
 });
 
 

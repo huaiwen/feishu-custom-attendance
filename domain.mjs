@@ -131,26 +131,13 @@ export function evaluatePunch(state, input, now = new Date()) {
   const segment = schedule.segments[input.segmentIndex];
   const location = state.locations.find(item => item.id === segment.locationId);
   requireValue(location, '排班地点已不存在，请联系管理员');
-  const coordinateSystem = input.coordinateSystem;
-  requireValue(coordinateSystem === 'wgs84' || coordinateSystem === 'gcj02', '定位坐标系必须明确为 wgs84 或 gcj02，请重新获取位置');
-  const centerSystem = location.coordinateSystem || 'wgs84';
-  requireValue(centerSystem === 'wgs84' || centerSystem === 'gcj02', '地点坐标系无效，请联系管理员');
   const start = timeMinutes(segment.start);
   const end = timeMinutes(segment.end);
   const inWindow = input.kind === 'in'
     ? clock.minutes >= start - 60 && clock.minutes < end
     : clock.minutes >= start && clock.minutes <= end + 120;
   requireValue(inWindow, input.kind === 'in' ? '上班打卡须在开始前 60 分钟至本时段结束前完成' : '下班打卡须在本时段开始至结束后 120 分钟内完成');
-  const latitude = number(input.latitude, '定位纬度', -90, 90);
-  const longitude = number(input.longitude, '定位经度', -180, 180);
-  const accuracy = number(input.accuracy, '定位精度（米）', 0, 100000);
-  requireValue(typeof input.locatedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(input.locatedAt) && validDate(input.locatedAt.slice(0, 10)), '定位时间无效，请重新获取位置');
-  const locatedAt = new Date(input.locatedAt).getTime();
-  requireValue(Number.isFinite(locatedAt) && now.getTime() - locatedAt <= 120000 && locatedAt - now.getTime() <= 10000, '定位已过期或时间异常，请重新获取位置');
-  requireValue(accuracy <= Math.min(location.radius, 100), `定位精度不足，请在开阔处重试（需优于 ${Math.min(location.radius, 100)} 米）`);
-  const [longitudeAtCenterSystem, latitudeAtCenterSystem] = gcoord.transform([longitude, latitude], coordinateSystem === 'gcj02' ? gcoord.GCJ02 : gcoord.WGS84, centerSystem === 'gcj02' ? gcoord.GCJ02 : gcoord.WGS84);
-  const distance = distanceMeters(latitudeAtCenterSystem, longitudeAtCenterSystem, location.latitude, location.longitude);
-  requireValue(distance + accuracy <= location.radius + 1e-6, `当前位置不在「${location.name}」的有效打卡范围内（距中心 ${Math.round(distance)} 米，范围 ${location.radius} 米，定位误差 ${Math.round(accuracy)} 米）`);
+  const { distance, accuracy } = evaluateLocation(location, input, now);
   return {
     employeeId: employee.id,
     scheduleId: schedule.id,
@@ -161,8 +148,28 @@ export function evaluatePunch(state, input, now = new Date()) {
     locationId: location.id,
     locationName: location.name,
     employeeName: employee.name,
-    distance: Math.round(distance * 10) / 10,
+    distance,
     accuracy,
     status: input.kind === 'in' && clock.minutes > start ? 'late' : input.kind === 'out' && clock.minutes < end ? 'early' : 'normal',
   };
+}
+
+export function evaluateLocation(location, input, now = new Date()) {
+  object(input);
+  requireValue(location, '请选择有效的考勤地点');
+  const coordinateSystem = input.coordinateSystem;
+  requireValue(coordinateSystem === 'wgs84' || coordinateSystem === 'gcj02', '定位坐标系必须明确为 wgs84 或 gcj02，请重新获取位置');
+  const centerSystem = location.coordinateSystem || 'wgs84';
+  requireValue(centerSystem === 'wgs84' || centerSystem === 'gcj02', '地点坐标系无效，请联系管理员');
+  const latitude = number(input.latitude, '定位纬度', -90, 90);
+  const longitude = number(input.longitude, '定位经度', -180, 180);
+  const accuracy = number(input.accuracy, '定位精度（米）', 0, 100000);
+  requireValue(typeof input.locatedAt === 'string' && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(input.locatedAt) && validDate(input.locatedAt.slice(0, 10)), '定位时间无效，请重新获取位置');
+  const locatedAt = new Date(input.locatedAt).getTime();
+  requireValue(Number.isFinite(locatedAt) && now.getTime() - locatedAt <= 120000 && locatedAt - now.getTime() <= 10000, '定位已过期或时间异常，请重新获取位置');
+  requireValue(accuracy <= Math.min(location.radius, 100), `定位精度不足，请在开阔处重试（需优于 ${Math.min(location.radius, 100)} 米）`);
+  const [longitudeAtCenterSystem, latitudeAtCenterSystem] = gcoord.transform([longitude, latitude], coordinateSystem === 'gcj02' ? gcoord.GCJ02 : gcoord.WGS84, centerSystem === 'gcj02' ? gcoord.GCJ02 : gcoord.WGS84);
+  const distance = distanceMeters(latitudeAtCenterSystem, longitudeAtCenterSystem, location.latitude, location.longitude);
+  requireValue(distance + accuracy <= location.radius + 1e-6, `当前位置不在「${location.name}」的有效打卡范围内（距中心 ${Math.round(distance)} 米，范围 ${location.radius} 米，定位误差 ${Math.round(accuracy)} 米）`);
+  return { distance: Math.round(distance * 10) / 10, accuracy };
 }

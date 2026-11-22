@@ -55,6 +55,9 @@ test('Feishu location waits for authentication when SDK ready arrives first', as
   sdk.callbacks.config.onSuccess({ session_key: 'test-session' });
   assert.equal((await pending).coordinateSystem, 'wgs84');
   assert.equal(sdk.locationCalls(), 1);
+  assert.equal(sdk.callbacks.location.timeout,5);
+  assert.equal(sdk.callbacks.location.accuracy,'best');
+  assert.equal(sdk.callbacks.location.cacheTimeout,0);
   assert.equal(sdk.timers.size, 0);
 });
 

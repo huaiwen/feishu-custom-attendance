@@ -1,8 +1,12 @@
 # 飞书排班提醒
 
-由本应用服务器调用飞书发送消息 API，以应用机器人身份发送 Card JSON 2.0 个人提醒卡片。无需读取聊天内容或创建外部定时任务。普通用户只看本人记录；考勤组管理员只看负责组，组织管理员可查看组织记录。卡片包含排班地点名称，不包含手机坐标、其他成员姓名或打卡结果。
+由本应用服务器调用飞书发送消息 API，以应用机器人身份发送 Card JSON 2.0 个人提醒卡片。无需读取聊天内容或创建外部定时任务。普通用户只看本人记录；考勤组管理员只看负责组，组织管理员可查看组织记录。卡片包含排班地点名称，不包含手机坐标或其他成员姓名。
 
-员工收到上班或下班提醒，看到时间与指定地点，点击唯一的“去打卡”按钮直接进入本人打卡页；页面提前准备飞书定位，员工确认后才保存打卡。管理员卡片的“查看记录”按钮进入对应组和日期。按钮只负责打开应用，不通过消息回调直接打卡；登录身份、范围和时间仍由服务器检查。卡片关闭转发，链接本身不含登录凭证。
+员工点击“去打卡”后，飞书打开仅用于定位的短暂窗口，自动免登、定位并提交该卡片对应的上班或下班打卡，无需再点一次提交。成功后原卡片更新为绿色“打卡成功”，显示实际时间、地点和正常/迟到/早退结果，窗口自动返回消息。首次定位仍需本人允许；拒绝、范围外或精度不足时不打卡，页面显示原因和重试入口。下班提醒明确提示提前提交会记为早退。
+
+普通卡片回调不携带手机位置，因此不能只靠服务端回调完成真实定位。短暂窗口仍使用飞书客户端 getLocation；没有浏览器定位降级，没有用服务器保存的旧位置代打卡。链接使用首页 fragment，保持免登重定向白名单不变。卡片绑定接收人和具体排班时段；未打卡前若排班或地点变更，要求查看最新安排；重复点击返回已有记录，不重复打卡。普通工作台打卡也会更新对应的新提醒卡片。
+
+更新使用同一机器人 PATCH 消息接口，发送前后均设置 update_multi。记录先落盘，再尝试更新原消息；更新失败至少间隔一分钟重试，重启继续，仅更新发送后 14 天内的卡片。窗口等待约 5 秒后若仍未更新，会明确显示“记录已保存”，不会重复提交。旧版已经发送的卡片继续打开原打卡页，不改写旧消息。通道测试卡仍只打开打卡页，不自动生成真实考勤。管理员卡片继续打开对应组和日期的记录。
 
 卡片使用紧凑宽度、详情背景块和通栏主按钮，支持飞书 7.20 及以上版本；旧客户端需升级才能显示完整卡片。
 
@@ -35,4 +39,4 @@
 
 “已发送”表示飞书服务接受消息，不保证手机推送弹出；仍受客户端通知、免打扰和系统权限影响。
 
-官方接口：[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[卡片 JSON 2.0](https://open.feishu.cn/document/feishu-cards/card-json-v2-structure)。业务参考：[人员与考勤管理示例](https://open.feishu.cn/document/quick-start-of-personnel-and-attendance-management-system/overview)，仅接入本项目需要的能力，不默认创建审批、多维表格或扩大通讯录写入权限。
+官方接口：[发送消息](https://open.feishu.cn/document/server-docs/im-v1/message/create)、[卡片回调结构](https://open.feishu.cn/document/feishu-cards/card-callback-communication)、[更新原卡片](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/im-v1/message/patch)、[关闭定位窗口](https://open.feishu.cn/document/uYjL24iN/uYTOuYTOuYTO/closewindow)、[卡片 JSON 2.0](https://open.feishu.cn/document/feishu-cards/card-json-v2-structure)。业务参考：[人员与考勤管理示例](https://open.feishu.cn/document/quick-start-of-personnel-and-attendance-management-system/overview)。

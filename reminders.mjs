@@ -31,8 +31,8 @@ export function reminderHistory(state, openId) {
     .map(({ type, attemptedAt, sentAt, status, error }) => ({ type, attemptedAt, sentAt, status, error }));
 }
 
-function reminderCard(title, subtitle, details, button, url) {
-  return { schema:'2.0', config:{width_mode:'compact',enable_forward:false,summary:{content:`${title} · ${subtitle}`}},
+export function reminderCard(title, subtitle, details, button, url) {
+  return { schema:'2.0', config:{width_mode:'compact',enable_forward:false,update_multi:true,summary:{content:`${title} · ${subtitle}`}},
     header:{title:{tag:'plain_text',content:title},subtitle:{tag:'plain_text',content:subtitle},template:'blue'},
     body:{direction:'vertical',padding:'12px',vertical_spacing:'12px',elements:[
       {tag:'column_set',flex_mode:'none',background_style:'blue-50',columns:[{tag:'column',width:'weighted',weight:1,padding:'12px',elements:[
@@ -43,26 +43,61 @@ function reminderCard(title, subtitle, details, button, url) {
   };
 }
 
+function punchSignature(state, schedule, index) {
+  const segment=schedule.segments[index];
+  return createHash('sha256').update(JSON.stringify([schedule.employeeId,schedule.groupId,schedule.date,segment,state.locations.find(l=>l.id===segment?.locationId)])).digest('hex');
+}
+
+export function reminderPunch(state, openId, key) {
+  const row=state.reminders?.deliveries.find(r=>r.key===key && r.openId===openId && r.type==='checkin' && r.status==='sent');
+  const employee=state.employees.find(e=>e.openId===openId && !e.disabled);
+  if (!row?.punch || !employee) throw new DomainError('这张打卡卡片不可用，请从飞书工作台打开考勤',404);
+  const {scheduleId,segmentIndex,kind,signature}=row.punch;
+  const schedule=state.schedules.find(s=>s.id===scheduleId && s.employeeId===employee.id);
+  if (!schedule || !schedule.segments[segmentIndex] || !['in','out'].includes(kind)) throw new DomainError('排班已调整，请从飞书工作台查看最新安排',409);
+  const record=state.records.find(r=>r.employeeId===employee.id && r.scheduleId===scheduleId && r.segmentIndex===segmentIndex && r.kind===kind);
+  if (!record && signature!==punchSignature(state,schedule,segmentIndex)) throw new DomainError('排班或地点已调整，请从飞书工作台查看最新安排',409);
+  const segment=schedule.segments[segmentIndex];
+  return {input:{employeeId:employee.id,scheduleId,segmentIndex,kind},date:schedule.date,time:kind==='in'?segment.start:segment.end,
+    locationName:state.locations.find(l=>l.id===segment.locationId)?.name || '排班地点',record:record || null,cardUpdated:Boolean(record && row.updatedRecordId===record.id)};
+}
+
+export function punchReminder(state, config, {key,openId,schedule,segmentIndex,kind,dueAt}) {
+  const segment=schedule.segments[segmentIndex],label=kind==='in'?'上班':'下班',time=kind==='in'?segment.start:segment.end;
+  return {key,openId,type:'checkin',dueAt,punch:{scheduleId:schedule.id,segmentIndex,kind,signature:punchSignature(state,schedule,segmentIndex)},
+    card:reminderCard(`${label}打卡提醒`,`${schedule.date} · ${time}`,
+      `打卡地点：${state.locations.find(l=>l.id===segment.locationId)?.name || '排班指定地点'}\n点击后将通过飞书定位并提交${label}打卡。${kind==='out'?'提前提交会记为早退。':''}`,
+      '去打卡',`${config.baseUrl}/#punch=${key}`)};
+}
+
+function completedCard(record, baseUrl) {
+  const time=new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(record.timestamp));
+  const status={normal:'正常',late:'迟到',early:'早退'}[record.status] || record.status;
+  const card=reminderCard('打卡成功',`${record.date} · ${record.kind==='in'?'上班':'下班'}`,
+    `打卡时间：${time}\n考勤地点：${record.locationName}\n考勤结果：${status}`,'查看我的记录',`${baseUrl}/?recordDate=${record.date}#records`);
+  card.header.template='green';card.body.elements[0].background_style='green-50';return card;
+}
+
 export function dueReminders(state, config, now) {
   const candidates = new Map();
   const add = (type, openId, subject, schedule, segment, kind, time, dueAt) => {
     if (now < dueAt || now >= dueAt + WINDOW) return;
     const key = createHash('sha256').update(JSON.stringify([type, openId, subject, schedule.date, kind, time])).digest('hex').slice(0, 40);
     const label = kind === 'in' ? '上班' : '下班';
-    const card = type === 'checkin'
-      ? reminderCard(`${label}打卡提醒`,`${schedule.date} · ${time}`,
-        `打卡地点：${state.locations.find(location => location.id === segment.locationId)?.name || '排班指定地点'}\n请在指定范围内打卡，已打卡请忽略。`,'去打卡',`${config.baseUrl}/#checkin`)
-      : reminderCard('考勤记录待查看',`${schedule.date} · ${time} ${label}`,
+    if (type==='checkin') {
+      candidates.set(key,punchReminder(state,config,{key,openId,schedule,segmentIndex:schedule.segments.indexOf(segment),kind,dueAt}));return;
+    }
+    const card = reminderCard('考勤记录待查看',`${schedule.date} · ${time} ${label}`,
         `考勤组：${state.groups.find(g => g.id === schedule.groupId)?.name || '考勤组'}\n请查看本次打卡记录与异常情况。`,'查看记录',`${config.baseUrl}/?recordDate=${schedule.date}&group=${encodeURIComponent(schedule.groupId)}#records`);
     candidates.set(key, { key, openId, type, dueAt, card });
   };
-  const orgAdmins = [...new Set([...config.adminOpenIds, ...state.employees.filter(e => e.orgAdmin).map(e => e.openId).filter(Boolean)])];
+  const orgAdmins = [...new Set([...config.adminOpenIds, ...state.employees.filter(e => e.orgAdmin && !e.disabled).map(e => e.openId).filter(Boolean)])].filter(id=>sessionFor(state,id,config.adminOpenIds));
   for (const schedule of state.schedules) {
     const employee = state.employees.find(e => e.id === schedule.employeeId);
-    if (!employee) continue;
+    if (!employee || employee.disabled) continue;
     const group = state.groups.find(g => g.id === schedule.groupId);
     if (!group) continue;
-    const groupAdmins = state.employees.filter(e => group.adminIds.includes(e.id) && e.openId).map(e => e.openId);
+    const groupAdmins = state.employees.filter(e => group.adminIds.includes(e.id) && e.openId && !e.disabled).map(e => e.openId);
     const reviewers = [...new Set(groupAdmins.length ? groupAdmins : orgAdmins)];
     for (const [index, segment] of schedule.segments.entries()) {
       for (const [kind, time] of [['in', segment.start], ['out', segment.end]]) {
@@ -82,14 +117,14 @@ export function dueReminders(state, config, now) {
   return [...candidates.values()];
 }
 
-export function createReminderDispatcher({ getState, commit, config, send, now = Date.now }) {
-  let running = false;
+export function createReminderDispatcher({ getState, commit, config, send, update, now = Date.now }) {
+  let running = false, updating=false;
   const current = key => dueReminders(getState(), config, now()).some(item => item.key === key);
   const saveAttempt = item => commit(state => {
     const data = initializeReminders(state);
     data.deliveries = data.deliveries.filter(row => row.attemptedAt > now() - 30 * 86400000);
     const previous = data.deliveries.find(row => row.key === item.key);
-    const row = { key: item.key, openId: item.openId, type: item.type, attemptedAt: now(), attempts: (previous?.attempts || 0) + 1, status: 'pending' };
+    const row = { key: item.key, openId: item.openId, type: item.type, ...(item.punch?{punch:item.punch}:{}), attemptedAt: now(), attempts: (previous?.attempts || 0) + 1, status: 'pending' };
     if (previous) Object.assign(previous, row); else data.deliveries.push(row);
   });
   const deliver = async (item, isCurrent) => {
@@ -109,7 +144,26 @@ export function createReminderDispatcher({ getState, commit, config, send, now =
     });
     return { status, error };
   };
+  const syncCompleted=async()=>{
+    if (updating || !update || !config.remindersEnabled) return;
+    updating=true;
+    try {
+      let count=0;
+      for (const row of getState().reminders?.deliveries || []) {
+        if (row.type!=='checkin' || row.status!=='sent' || !row.punch || !row.messageId || now()-row.sentAt>=14*86400000 || now()-(row.updateAttemptedAt || 0)<MINUTE) continue;
+        let result;try {result=reminderPunch(getState(),row.openId,row.key);} catch {continue;}
+        if (!result.record || result.cardUpdated) continue;
+        commit(next=>{next.reminders.deliveries.find(r=>r.key===row.key).updateAttemptedAt=now();});
+        try {
+          await update({messageId:row.messageId,card:completedCard(result.record,config.baseUrl)});
+          commit(next=>{next.reminders.deliveries.find(r=>r.key===row.key).updatedRecordId=result.record.id;});
+        } catch { /* The persisted punch is authoritative; retry only the card on the next tick. */ }
+        if (++count>=10) break;
+      }
+    } finally {updating=false;}
+  };
   return {
+    syncCompleted,
     async run() {
       if (running || !config.remindersEnabled) return;
       running = true;
@@ -119,6 +173,7 @@ export function createReminderDispatcher({ getState, commit, config, send, now =
           if (previous && (['sent', 'cancelled'].includes(previous.status) || previous.attempts >= 3 || now() - previous.attemptedAt < MINUTE)) continue;
           if (current(item.key)) await deliver(item, () => current(item.key));
         }
+        await syncCompleted();
       } finally { running = false; }
     },
     async test(openId) {

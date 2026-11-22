@@ -22,7 +22,7 @@ const icon = name => `<svg class="app-icon" viewBox="0 0 24 24" fill="none" stro
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const safeColor = value => /^#[a-fA-F0-9]{6}$/.test(value || '') ? value : '#3370ff';
 const weekdays = ['一','二','三','四','五','六','日'];
-const views = {overview:['管理首页','building','首页'],schedules:['精细化排班','calendar','排班'],locations:['考勤地点','pin','地点'],employees:['人员管理','users','人员'],groups:['考勤组','building','考勤组'],records:['考勤记录','records','记录'],checkin:['员工打卡','checkin','打卡'],integration:['飞书接入','link','接入']};
+const views = {overview:['管理首页','building','首页'],schedules:['精细化排班','calendar','排班'],locations:['考勤地点','pin','地点'],employees:['人员管理','users','人员'],departments:['组织部门','building','部门'],groups:['考勤组','building','考勤组'],records:['考勤记录','records','记录'],checkin:['员工打卡','checkin','打卡'],requests:['请假与加班','calendar','申请'],integration:['飞书接入','link','接入']};
 const ui = {group:'',directory:null,directorySearch:'',directoryDepartment:'',directorySelected:new Set(),db:null,view:'overview',guided:false,week:null,search:'',employee:'',recordFrom:'',recordTo:'',recordEmployee:'',recordStatus:'',scheduleTab:'personal',recordTab:'flow',summaryFrom:'',summaryTo:'',summary:null,summaryError:'',summaryLoading:false,drawer:null,busy:false};
 const main = document.querySelector('#main');
 const drawer = document.querySelector('#drawer');
@@ -49,9 +49,13 @@ function isOrgAdmin() {return ui.db.session?.role === 'org_admin';}
 const roleLabels = {user:'普通用户',group_admin:'考勤组管理员',org_admin:'组织管理员'};
 function managedGroups() {return ui.db.groups.filter(g => isOrgAdmin() || ui.db.session.managedGroupIds.includes(g.id));}
 function groupName(id) {return ui.db.groups.find(g => g.id === id)?.name || '未分组';}
-function visibleViews() {return isOrgAdmin() ? Object.keys(views) : isAdmin() ? ['overview','schedules','employees','groups','records','checkin'] : ['checkin','schedules','records'];}
+function visibleViews() {return isOrgAdmin() ? Object.keys(views) : isAdmin() ? ['overview','schedules','employees','groups','records','checkin','requests'] : ['checkin','schedules','requests','records'];}
 function renderShell() {
-  document.querySelector('#navigation').innerHTML = visibleViews().map(key => `${key === 'checkin' && isAdmin() ? '<div class="nav-separator"></div>' : ''}<button class="nav-button ${ui.view === key ? 'active' : ''}" data-action="navigate" data-view="${key}" aria-label="${views[key][0]}" ${ui.view === key ? 'aria-current="page"' : ''} title="${views[key][0]}">${icon(views[key][1])}<span class="nav-label-full">${!isAdmin() && key === 'schedules' ? '我的排班' : views[key][0]}</span><span class="nav-label-mobile" aria-hidden="true">${views[key][2]}</span></button>`).join('');
+  const available=visibleViews(), primary=isAdmin() ? ['overview','schedules','records','checkin'] : available;
+  const secondary=available.filter(key=>!primary.includes(key));
+  const navButton=(key,extra='')=>`<button class="nav-button ${extra} ${ui.view === key ? 'active' : ''}" data-action="navigate" data-view="${key}" aria-label="${views[key][0]}" ${ui.view === key ? 'aria-current="page"' : ''} title="${views[key][0]}">${icon(views[key][1])}<span class="nav-label-full">${!isAdmin() && key === 'schedules' ? '我的排班' : views[key][0]}</span><span class="nav-label-mobile" aria-hidden="true">${views[key][2]}</span></button>`;
+  document.querySelector('#navigation').innerHTML=available.map(key=>`${key === 'checkin' && isAdmin() ? '<div class="nav-separator"></div>' : ''}${navButton(key,secondary.includes(key)?'nav-secondary':'')}`).join('')+
+    (secondary.length ? `<details class="nav-more"><summary class="nav-button ${secondary.includes(ui.view)?'active':''}">${icon('plus')}<span>更多</span></summary><div class="nav-more-panel">${secondary.map(key=>navButton(key)).join('')}</div></details>` : '');
   document.querySelector('#breadcrumb-label').textContent = !isAdmin() && ui.view === 'schedules' ? '我的排班' : views[ui.view][0];
   document.querySelector('#mode-label').textContent = ui.db.mode === 'demo' ? '本地演示' : '飞书应用';
   document.querySelector('#my-reminders').hidden = false;
@@ -69,7 +73,7 @@ function render() {
   if (!ui.db) return;
   if (!visibleViews().includes(ui.view)) ui.view = isAdmin() ? 'overview' : 'checkin';
   renderShell();main.className = `${ui.view === 'checkin' ? 'checkin-page ' : ''}view-enter`;
-  const renderers = {overview:renderOverview,schedules:renderSchedules,locations:renderLocations,employees:renderEmployees,groups:renderGroups,records:renderRecords,checkin:renderCheckin,integration:renderIntegration};
+  const renderers = {overview:renderOverview,schedules:renderSchedules,locations:renderLocations,employees:renderEmployees,departments:renderDepartments,groups:renderGroups,records:renderRecords,checkin:renderCheckin,requests:renderRequests,integration:renderIntegration};
   renderers[ui.view]();
 }
 function labelTableCells(root = main) {
@@ -153,7 +157,7 @@ function renderLocations() {
 function groupFilter() {return `<div class="group-filter"><label>考勤组 <select id="group-filter"><option value="">全部可见考勤组</option>${managedGroups().map(g => `<option value="${esc(g.id)}" ${ui.group === g.id ? 'selected' : ''}>${esc(g.name)}</option>`).join('')}</select></label></div>`;}
 function employeeRows() {
   const employees = ui.db.employees.filter(e => (!ui.group || e.groupId === ui.group) && `${e.name} ${e.department} ${e.employeeNo}`.toLowerCase().includes(ui.search.toLowerCase()));
-  return `<table class="data-table"><thead><tr><th>成员</th><th>部门</th><th>考勤组</th><th>角色</th><th>飞书身份</th>${isOrgAdmin() ? '<th>操作</th>' : ''}</tr></thead><tbody>${employees.map(e => `<tr><td><div class="employee-identity"><span class="avatar">${esc(e.name.slice(-1))}</span><div><strong>${esc(e.name)}</strong><small>${esc(e.employeeNo || '')}</small></div></div></td><td>${esc(e.department || '—')}</td><td>${esc(groupName(e.groupId))}</td><td>${roleLabels[e.role] || '普通用户'}</td><td><span class="status ${e.bound ? '' : 'muted'}">${e.bound ? '已绑定' : '演示人员'}</span></td>${isOrgAdmin() ? `<td><button class="text-button" data-action="edit-access" data-id="${esc(e.id)}">考勤设置</button></td>` : ''}</tr>`).join('')}</tbody></table>${!employees.length ? '<div class="empty-state">暂无匹配的成员</div>' : ''}`;
+  return `<table class="data-table"><thead><tr><th>成员</th><th>部门</th><th>考勤组</th><th>角色</th><th>飞书身份</th>${isOrgAdmin() ? '<th>操作</th>' : ''}</tr></thead><tbody>${employees.map(e => `<tr><td><div class="employee-identity"><span class="avatar">${esc(e.name.slice(-1))}</span><div><strong>${esc(e.name)}</strong><small>${esc(e.employeeNo || '')}</small></div></div></td><td>${esc(e.department || '—')}</td><td>${esc(groupName(e.groupId))}</td><td>${roleLabels[e.role] || '普通用户'}</td><td><span class="status ${e.bound ? '' : 'muted'}">${e.disabled ? '组织账号已停用' : e.bound ? '已绑定' : '演示人员'}</span></td>${isOrgAdmin() ? `<td><button class="text-button" data-action="edit-access" data-id="${esc(e.id)}">考勤设置</button></td>` : ''}</tr>`).join('')}</tbody></table>${!employees.length ? '<div class="empty-state">暂无匹配的成员</div>' : ''}`;
 }
 function renderEmployees() {
   main.innerHTML = `${pageHeader('人员管理',isOrgAdmin() ? '从飞书组织选择成员，设置考勤组和角色。' : '管理所负责考勤组的成员。',ui.db.mode === 'feishu' ? `<button class="button primary" data-action="open-directory">${icon('plus')}从组织添加</button>` : `<button class="button primary" data-action="new-employee">${icon('plus')}新增演示人员</button>`)}<section class="panel"><div class="toolbar"><strong>可见成员 ${ui.db.employees.length}</strong><label class="search-box">${icon('search')}<input type="search" id="employee-search" placeholder="搜索姓名、部门或工号" value="${esc(ui.search)}" aria-label="搜索员工"></label></div>${groupFilter()}<div class="table-scroll" id="employee-grid">${employeeRows()}</div></section>`;
@@ -238,9 +242,75 @@ function renderCheckin() {
   const suggestedIndex = schedule ? schedule.segments.findIndex((segment,index) => {const [hour,minute] = segment.end.split(':').map(Number);return hour*60+minute+120 >= currentMinutes && (!recorded(schedule,index,'in') || !recorded(schedule,index,'out'));}) : -1;
   main.innerHTML = `${pageHeader('今日打卡','按排班到达指定地点，完成上、下班打卡。')}${ui.db.mode === 'demo' ? `<div class="info-banner warning">${icon('info')}<p>本地演示 · 可切换示例员工。定位打卡保存演示记录；规则试算不产生记录。</p></div>` : ''}<div class="checkin-layout"><section class="panel"><div class="checkin-header"><div><strong>${esc(employee?.name || '尚未绑定员工身份')}</strong><p>${ui.db.today} · 今日排班</p></div>${ui.db.mode === 'demo' ? `<select class="employee-switch" id="checkin-employee" aria-label="切换演示员工">${ui.db.employees.map(e => `<option value="${esc(e.id)}" ${e.id === ui.employee ? 'selected' : ''}>${esc(e.name)}</option>`).join('')}</select>` : '<span class="status">本人打卡</span>'}</div>${schedule ? schedule.segments.map((segment,index) => {const location = locationById(segment.locationId);return `<div class="checkin-day ${index === suggestedIndex ? 'current' : ''}"><div class="checkin-period"><span>时段 ${index+1}</span>${index === suggestedIndex ? '<span class="status muted">待完成</span>' : ''}</div><div class="checkin-time">${esc(segment.start)} <span class="muted">—</span> ${esc(segment.end)}</div><div class="checkin-place">${icon('pin')}${esc(location?.name || '未知地点')}</div><div class="checkin-radius">${esc(location?.address || '考勤地点')} · 打卡半径 ${location?.radius || 0} 米</div><div class="checkin-actions">${['in','out'].map(kind => {const record = recorded(schedule,index,kind);return `<button class="button ${index === suggestedIndex && kind === (recorded(schedule,index,'in') ? 'out' : 'in') ? 'primary' : ''}" data-action="checkin" data-index="${index}" data-kind="${kind}" ${record ? 'disabled' : ''}>${icon(record ? 'checkin' : 'pin')}${record ? `${kind === 'in' ? '上班' : '下班'}已打卡 ${displayTime(record.timestamp)}` : `${kind === 'in' ? '上班' : '下班'}定位打卡`}</button>`;}).join('')}</div></div>`;}).join('') : `<div class="empty-state">${icon('calendar')}${employee ? '今日未安排班次' : '请先绑定员工身份'}<p>${employee ? isAdmin() ? '先完成地点和成员配置，再安排今天的班次。' : '请联系考勤组管理员确认今天的安排。' : '请联系管理员从飞书组织中将你加入考勤组。'}</p><button class="button" data-action="navigate" data-view="${isAdmin() ? 'overview' : 'schedules'}">${isAdmin() ? '继续配置考勤' : '查看我的排班'}</button></div>`}</section><aside class="help-panel"><details class="rule-details"><summary>查看打卡规则</summary><ol><li><strong>按时段核对地点</strong><br>每个时段分别完成上、下班打卡，跨园区排班按照对应地点校验。</li><li><strong>允许定位权限</strong><br>使用手机并开启高精度定位。位置误差范围需完全落入考勤半径，精度须不大于半径且不超过 100 米。</li><li><strong>以服务器时间为准</strong><br>上班可提前 60 分钟打卡；下班最晚可在时段结束后 120 分钟打卡。晚到、早走将标记异常。</li></ol></details>${ui.db.mode === 'demo' && schedule ? `<div class="simulation"><h3>${icon('info')}规则试算 <span class="status muted">不写入记录</span></h3><p>使用指定位置和时段开始/结束时间，检查地点规则。</p><select id="preview-segment" aria-label="试算工作时段">${schedule.segments.map((segment,index) => `<option value="${index}">${segment.start}–${segment.end} · ${esc(locationById(segment.locationId)?.name)}</option>`).join('')}</select><select id="preview-kind" aria-label="试算打卡类型"><option value="in">上班打卡 · 时段开始时</option><option value="out">下班打卡 · 时段结束时</option></select><select id="preview-scenario" aria-label="试算定位场景"><option value="center">在指定地点中心 · 精度 5 米</option><option value="outside">偏离指定地点约 1 公里</option><option value="inaccurate">位于中心但定位精度不足</option></select><button class="button" data-action="preview">运行规则试算</button><div id="preview-result" role="status"></div></div>` : ''}</aside></div>`;
 }
-function renderIntegration() {
-  const configured = ui.db.integration?.configured;
-  main.innerHTML = `${pageHeader('飞书接入','查看接入进度，配置企业工作台入口。')}<div class="integration-layout"><div class="info-banner">${icon('info')}<p>自定义考勤独立管理班次、排班、打卡与统计。飞书提供工作台入口、员工身份和手机定位。</p></div><section class="panel"><div class="integration-head"><div class="integration-logo">${icon('link')}</div><div><h3>自定义考勤</h3><p>企业自建网页应用</p></div><span class="status muted">${configured ? '待实机验证' : '本地演示'}</span></div><div class="setup-step"><span class="step-number">1</span><div><h3>登录与定位 <span class="status ${configured ? '' : 'muted'}">${configured ? '已配置 · 待验证' : '代码已就绪 · 待配置'}</span></h3><p>${configured ? `App ID：${esc(ui.db.integration.appId)}。请使用实际企业账号和手机飞书验证。` : '已提供飞书登录与手机定位代码。需要配置自建应用凭据、HTTPS 地址、安全域名与回调地址。'}</p></div></div><div class="setup-step"><span class="step-number">2</span><div><h3>官方考勤同步 <span class="status muted">可选 · 未接入</span></h3><p>如需将结果交给官方考勤统一处理，可另行接入同步；独立使用不依赖官方考勤应用。</p></div></div><div class="setup-step"><span class="step-number">3</span><div><h3>上线前准备</h3><p>配置自建应用的工作台入口，绑定员工身份，在地图上选择真实地点，再用手机验证园区边界、定位精度及打卡记录。</p><a href="https://open.feishu.cn/app" target="_blank" rel="noopener noreferrer">打开飞书开放平台 ↗</a></div></div></section><div class="hint-line">${icon('info')}<span>配置步骤与官方接口方案见项目文档。当前页面不会向官方考勤写入数据。</span></div></div>`;
+const requestStatusLabels = {PENDING:'审批中',APPROVED:'已通过',REJECTED:'已拒绝',CANCELED:'已撤回',DELETED:'已停用',REVERTED:'已撤销'};
+const kindLabels = {leave:'请假',overtime:'加班'};
+let workflowLoad = 0;
+function fullDate(value) {return new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(new Date(value));}
+function nativeLink(item) {return /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent) ? item.url || item.nativeUrl : item.desktopUrl || item.nativeDesktopUrl;}
+async function renderRequests() {
+  const request = ++workflowLoad;
+  main.innerHTML = `${pageHeader('请假与加班','在飞书审批中提交申请，由教师组审批；通过后安排日历。','<button class="button" data-action="refresh-requests">刷新状态</button>')}<p role="status">正在读取申请…</p>`;
+  try {
+    const data = await api('/api/workflows');
+    if (request !== workflowLoad || ui.view !== 'requests') return;
+    ui.workflows = data;
+    const requested = new URLSearchParams(location.search).get('request');
+    const mine = data.requests.filter(r => r.employeeId === ui.db.session.employeeId);
+    const others = data.requests.filter(r => r.employeeId !== ui.db.session.employeeId);
+    const requestItem = r => `<article class="panel request-item" ${r.id === requested ? 'aria-label="当前申请"' : ''}>
+      <div class="request-heading"><h2>${esc(kindLabels[r.kind])}${r.employeeId === ui.db.session.employeeId ? '' : ` · ${esc(r.employeeName)}`}</h2><span class="status ${r.status === 'APPROVED' ? '' : 'muted'}">${esc(requestStatusLabels[r.status])}</span></div>
+      ${r.error ? `<p class="form-error" role="alert">${esc(r.error)}</p>` : r.ranges.map((range,index) => {
+        const proof = r.verified.find(v => v.rangeIndex === index);
+        return `<div class="request-range"><p><strong>${esc(fullDate(range.start))} — ${esc(fullDate(range.end))}</strong></p>
+        ${r.kind === 'overtime' ? `<p class="subtle">${proof ? `已在${esc(proof.locationName)}核验 · ${esc(fullDate(proof.at))}` : '在获批时段内，到现场核验后加入日历。'}</p>` : ''}
+        ${r.employeeId === ui.db.session.employeeId && r.kind === 'overtime' && r.status === 'APPROVED' && !proof ? `<div class="request-location"><label class="field">加班地点<select id="overtime-${esc(r.id)}-${index}" aria-label="加班地点">${data.locations.map(l=>`<option value="${esc(l.id)}">${esc(l.name)}</option>`).join('')}</select></label><button class="button primary" data-action="workflow-calendar" data-id="${esc(r.id)}" data-index="${index}" ${data.locations.length ? '' : 'disabled'}>定位核验并加入日历</button></div>` : ''}</div>`;
+      }).join('')}
+      <div class="request-footer"><a class="text-button" href="${esc(nativeLink(r))}">查看原审批</a>
+      ${r.employeeId === ui.db.session.employeeId && r.kind === 'leave' && r.status === 'APPROVED' && !r.error && r.calendarStatus === 'none' ? `<button class="button primary" data-action="workflow-calendar" data-id="${esc(r.id)}">加入我的日历</button>` : ''}
+      <span class="subtle">${r.calendarStatus === 'synced' ? '日历已同步' : r.calendarStatus === 'pending' ? '等待核验或日历同步' : '尚未加入日历'} · ${r.archiveStatus === 'synced' ? '已归档' : '等待归档'}</span></div></article>`;
+    main.innerHTML = `${pageHeader('请假与加班','在飞书审批中提交申请，由教师组审批；通过后安排日历。','<button class="button" data-action="refresh-requests">刷新状态</button>')}
+      ${!data.enabled ? '<div class="info-banner"><p>审批、日历和考勤台账正在接入。现有排班与打卡可继续使用。</p></div>' : ''}
+      <div class="request-start">${Object.entries(kindLabels).map(([kind,label])=>`<section class="panel request-item"><h2>${label}</h2><p>${kind === 'leave' ? '填写请假时间与事由。审批通过后，卡片可一键加入自己的日历。' : '申请加班时间。审批通过后，抵达现场核验位置，再加入自己的日历。'}</p>${data.enabled && data.definitions[kind] ? `<a class="button primary" href="${esc(nativeLink(data.definitions[kind]))}">申请${label}</a>` : '<button class="button" disabled>等待接通</button>'}</section>`).join('')}</div>
+      <div class="section-heading"><h2>我的申请</h2><a class="text-button" href="/api/workflows.csv">导出申请记录</a></div>
+      <div class="request-list">${mine.map(requestItem).join('') || '<section class="panel empty-state">还没有申请。提交后返回此页，可查看审批与日历状态。</section>'}</div>
+      ${isAdmin() && others.length ? `<div class="section-heading"><h2>管理范围内的申请</h2></div><div class="request-list">${others.map(requestItem).join('')}</div>` : ''}`;
+  } catch (error) {if (ui.view === 'requests') main.innerHTML += `<p class="form-error" role="alert">${esc(error.message)}</p>`;}
+}
+async function workflowCalendar(button) {
+  if (ui.busy) return;
+  ui.busy=true;button.disabled=true;const old=button.textContent;
+  try {
+    const input={};
+    if (button.dataset.index !== undefined) {
+      input.rangeIndex=Number(button.dataset.index);
+      input.locationId=document.getElementById(`overtime-${button.dataset.id}-${input.rangeIndex}`).value;
+      button.textContent='正在通过飞书核验位置…';
+      const position=await getPosition();
+      Object.assign(input,{latitude:position.latitude,longitude:position.longitude,accuracy:position.accuracy,coordinateSystem:position.coordinateSystem,locatedAt:new Date(position.timestamp).toISOString()});
+    }
+    await api(`/api/workflows/${encodeURIComponent(button.dataset.id)}/calendar`,input);
+    toast('已提交日历同步，稍后刷新可查看结果');await renderRequests();
+  } catch(error) {toast(error.message,true);button.disabled=false;button.textContent=old;}
+  finally {ui.busy=false;}
+}
+async function renderDepartments() {
+  main.innerHTML=`${pageHeader('组织部门','查看飞书部门与成员，从组织选择考勤成员。')}<p role="status">正在读取组织…</p>`;
+  try {
+    const data=await api('/api/directory');if (ui.view!=='departments') return;
+    main.innerHTML=`${pageHeader('组织部门','查看飞书部门与成员，从组织选择考勤成员。','<button class="button primary" data-action="open-directory">选择考勤成员</button>')}
+      <section class="panel"><div class="table-scroll"><table class="data-table"><thead><tr><th>部门</th><th>成员</th></tr></thead><tbody>${data.departments.map(d=>`<tr><td>${esc(d.name)}</td><td>${data.users.filter(u=>u.departmentIds?.includes(d.id)).length} 人</td></tr>`).join('')}</tbody></table></div>${data.demo ? '<p class="empty-state">飞书组织将在正式接入后显示。</p>' : ''}</section>`;
+    labelTableCells();
+  } catch(error) {if (ui.view==='departments') main.innerHTML+=`<p class="form-error" role="alert">${esc(error.message)}</p>`;}
+}
+async function renderIntegration() {
+  main.innerHTML=`${pageHeader('飞书接入','统一查看身份、审批、日历和考勤台账的连接状态。')}<p role="status">正在核对连接…</p>`;
+  try {
+    const data=await api('/api/workflows');if(ui.view!=='integration') return;
+    main.innerHTML=`${pageHeader('飞书接入','统一查看身份、审批、日历和考勤台账的连接状态。')}<section class="panel request-item"><h2>自定义考勤</h2><p>工作台提供免登、排班、手机定位与个人记录；机器人提供打卡提醒和审批结果卡片。</p>
+      <dl class="integration-status"><div><dt>飞书身份与组织选人</dt><dd>${ui.db.mode==='feishu'?'已接通':'本地演示'}</dd></div><div><dt>请假、加班与日历</dt><dd>${data.enabled?'已启用':'等待权限与审批配置'}</dd></div><div><dt>最近组织或审批事件</dt><dd>${data.status.lastEventAt?esc(fullDate(data.status.lastEventAt)):'尚未收到'}</dd></div><div><dt>自动归档</dt><dd>${data.status.archived} 条已同步 · ${data.status.pending} 项待处理</dd></div></dl>
+      ${data.status.error?`<p class="form-error" role="alert">${esc(data.status.error)}</p>`:''}
+      <div class="overview-actions"><button class="button" data-action="navigate" data-view="requests">查看申请</button>${data.tableUrl?`<a class="button" href="${esc(data.tableUrl)}" target="_blank" rel="noopener noreferrer">打开考勤台账</a>`:''}<a class="text-button" href="/api/records.csv">导出打卡记录</a></div></section>`;
+  } catch(error) {if(ui.view==='integration') main.innerHTML+=`<p class="form-error" role="alert">${esc(error.message)}</p>`;}
 }
 
 function locationOptions(selected) {return ui.db.locations.map(location => `<option value="${esc(location.id)}" ${selected === location.id ? 'selected' : ''}>${esc(location.name)}</option>`).join('');}
@@ -415,7 +485,7 @@ async function requestPosition() {
     try {
       const position = await new Promise((resolve,reject) => {
       const timeout = setTimeout(() => reject(new Error('飞书定位超时，请开启高精度定位并重试')),20000);
-      window.tt.getLocation({timeout:15,cacheTimeout:0,accuracy:'best',success:result => {
+      window.tt.getLocation({timeout:5,cacheTimeout:0,accuracy:'best',success:result => {
         clearTimeout(timeout);
         if (!['wgs84','gcj02'].includes(result.type)) return reject(new Error('飞书返回的位置暂不可用，请更新客户端或联系管理员'));
         const position = {latitude:Number(result.latitude),longitude:Number(result.longitude),accuracy:Number(result.horizontalAccuracy ?? result.accuracy),timestamp:Number(result.timestamp),coordinateSystem:result.type};
@@ -460,6 +530,47 @@ async function checkin(button) {
   } catch (error) {toast(error.message,true);button.disabled = false;button.innerHTML = oldText;}
   finally {ui.busy = false;}
 }
+async function quickPunch() {
+  if (ui.busy) return;
+  const destination=location.hash,key=destination.match(/^#punch=([a-f0-9]{40})$/)?.[1];
+  ui.busy=true;
+  const show=(title,detail,loading=false)=>{main.innerHTML=`<section class="quick-punch-panel" aria-live="polite">${loading?'<span class="spinner"></span>':icon('checkin')}<h1>${esc(title)}</h1><p>${esc(detail)}</p>${!loading?'<button class="button primary" data-action="close-punch">返回消息</button><a href="#checkin">查看今日考勤</a>':''}</section>`;};
+  try {
+    show('正在准备打卡','正在核对这张卡片对应的班次…',true);
+    if (!key) throw new Error('这张打卡卡片无效，请查看今日考勤');
+    let result=await api(`/api/reminders/punch?key=${key}`);
+    if (!result.record) {
+      if (result.date!==ui.db.today) throw new Error('这张卡片不是今天的班次，请查看今日考勤');
+      show(`正在${result.input.kind==='in'?'上班':'下班'}打卡`,`${result.locationName} · 正在通过飞书获取位置…`,true);
+      const position=await getPosition();
+      // A closed or backgrounded locating screen must not submit a delayed punch.
+      if (location.hash!==destination || document.visibilityState==='hidden') return;
+      show('正在校验打卡',`${result.locationName} · 正在核对位置与打卡范围…`,true);
+      const saved=await api('/api/checkin',{reminderKey:key,latitude:position.latitude,longitude:position.longitude,accuracy:position.accuracy,coordinateSystem:position.coordinateSystem,locatedAt:new Date(position.timestamp).toISOString()});
+      result={...result,record:saved.record};
+    }
+    const status={normal:'正常',late:'迟到',early:'早退'}[result.record.status] || result.record.status;
+    show('打卡成功',`${displayTime(result.record.timestamp)} · ${result.record.locationName} · ${status}\n正在更新原提醒卡片…`,true);
+    for (let attempt=0;attempt<6 && !result.cardUpdated;attempt++) {
+      await new Promise(resolve=>setTimeout(resolve,800));
+      if (location.hash!==destination) return;
+      try {result=await api(`/api/reminders/punch?key=${key}`);} catch {break;}
+    }
+    if (location.hash!==destination) return;
+    show('打卡成功',`${displayTime(result.record.timestamp)} · ${result.record.locationName} · ${status}\n${result.cardUpdated?'原提醒卡片已更新，可以返回消息。':'记录已保存，提醒卡片稍后自动更新，无需重复打卡。'}`);
+    if (result.cardUpdated) await closePunch();
+  } catch (error) {
+    if (location.hash===destination) {
+      show('暂未完成打卡',error.message);
+      main.querySelector('.quick-punch-panel').insertAdjacentHTML('beforeend','<button class="text-button" data-action="quick-punch">重新定位并打卡</button>');
+    }
+  } finally {ui.busy=false;}
+}
+async function closePunch() {
+  const fallback=()=>toast('请关闭当前窗口，返回飞书消息');
+  try {await loadFeishuScript();window.h5sdk.ready(()=>{if(typeof window.tt?.closeWindow==='function') window.tt.closeWindow({fail:fallback});else fallback();});}
+  catch {fallback();}
+}
 async function preview(button) {
   const schedule = currentSchedule();if (!schedule || ui.busy) return;
   const index = Number(document.querySelector('#preview-segment').value), kind = document.querySelector('#preview-kind').value;
@@ -478,6 +589,10 @@ document.addEventListener('click', async event => {
   const button = event.target.closest('[data-action]');if (!button || button.disabled) return;
   const action = button.dataset.action;
   switch (action) {
+    case 'quick-punch':await quickPunch();break;
+    case 'close-punch':closePunch();break;
+    case 'refresh-requests':await renderRequests();break;
+    case 'workflow-calendar':await workflowCalendar(button);break;
     case 'setup-step':await startSetupStep(button.dataset.step);break;
     case 'group-schedules':ui.guided = false;ui.group = button.dataset.id;navigate('schedules');break;
     case 'reminders':await openReminders();break;
@@ -531,7 +646,7 @@ document.addEventListener('change', event => {
 document.querySelector('#drawer-form').addEventListener('submit',saveDrawer);
 document.querySelector('#drawer-form').addEventListener('invalid',event => event.target.closest('details')?.setAttribute('open',''),true);
 drawer.addEventListener('cancel',event => {if (ui.busy) event.preventDefault();else {ui.drawer?.cleanup?.();ui.drawer = null;}});
-window.addEventListener('hashchange',() => {ui.view = location.hash.slice(1) || (isAdmin() ? 'overview' : 'checkin');render();});
+window.addEventListener('hashchange',() => {if (location.hash.startsWith('#punch=')) {void init();return;}document.body?.classList.remove('quick-punch');ui.view = location.hash.slice(1) || (isAdmin() ? 'overview' : 'checkin');render();});
 function reminderLinkFilters() {
   const params = new URLSearchParams(location.search);
   const date = params.get('recordDate');
@@ -542,7 +657,7 @@ function reminderLinkFilters() {
 function loginLink() {
   const query = new URLSearchParams(location.search);
   const params = new URLSearchParams({view:location.hash.slice(1)});
-  for (const name of ['recordDate','group']) if (query.has(name)) params.set(name,query.get(name));
+  for (const name of ['recordDate','group','request']) if (query.has(name)) params.set(name,query.get(name));
   return `/auth/login?${params}`;
 }
 let triedNativeLogin=false;
@@ -568,7 +683,8 @@ async function nativeLogin() {
   await api('/auth/feishu',{nonce:config.nonce,code});
 }
 async function init() {
-  try {await refresh();warmLocation();reminderLinkFilters();const requested = location.hash.slice(1);ui.view = requested || (isAdmin() ? 'overview' : 'checkin');if (isAdmin() && ['schedules','checkin',''].includes(requested) && !ui.db.schedules.some(s => s.date >= ui.db.today)) ui.view = 'overview';render();}
+  document.body?.classList.toggle('quick-punch',location.hash.startsWith('#punch='));
+  try {await refresh();if (location.hash.startsWith('#punch=')) {await quickPunch();return;}warmLocation();reminderLinkFilters();const requested = location.hash.slice(1);ui.view = requested || (isAdmin() ? 'overview' : 'checkin');if (isAdmin() && ['schedules','checkin',''].includes(requested) && !ui.db.schedules.some(s => s.date >= ui.db.today)) ui.view = 'overview';render();}
   catch (error) {
     if (error.status===401 && !triedNativeLogin && !new URLSearchParams(location.search).has('signedOut') && /Lark|Feishu/i.test(navigator.userAgent)) {
       triedNativeLogin=true;main.innerHTML='<div class="loading"><span class="spinner"></span>正在使用飞书身份进入…</div>';

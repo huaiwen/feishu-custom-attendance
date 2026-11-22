@@ -2,12 +2,15 @@
 *
 !Dockerfile
 !package.json
+!package-lock.json
 !server.mjs
 !domain.mjs
 !feishu.mjs
 !schedule-tools.mjs
 !access.mjs
 !reminders.mjs
+!workflows.mjs
+!feishu-workflows.mjs
 !public/
 !public/**
 

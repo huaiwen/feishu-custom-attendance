@@ -4,11 +4,13 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DomainError, validateEmployee, validateLocation, validateScheduleBatch, evaluatePunch, clockParts } from './domain.mjs';
-import { exchangeCode, getJsapiConfig, getDirectory, sendReminderMessage } from './feishu.mjs';
+import { exchangeCode, getJsapiConfig, getDirectory, sendReminderMessage, updateReminderCard } from './feishu.mjs';
 import { validateShiftTemplate, attendanceSummary } from './schedule-tools.mjs';
 import { sessionFor, managesGroup, requireGroup, visibleState, validateGroup, migrateGroups } from './access.mjs';
 
-import { initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, createReminderDispatcher } from './reminders.mjs';
+import { initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, createReminderDispatcher, reminderPunch } from './reminders.mjs';
+import { workflowConfiguration, initializeWorkflows, createWorkflows, approvalArchive } from './workflows.mjs';
+import { createFeishuWorkflowApi, startFeishuEvents } from './feishu-workflows.mjs';
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const ZONE = 'Asia/Shanghai';
@@ -35,7 +37,9 @@ export function configuration(env = process.env) {
   if ([amapKey, amapSecurityCode].some(value => value && !/^[a-zA-Z0-9_-]{16,128}$/.test(value))) throw new Error('高德地图配置格式不正确');
   if (env.REMINDERS_ENABLED && !['true', 'false'].includes(env.REMINDERS_ENABLED)) throw new Error('REMINDERS_ENABLED 必须为 true 或 false');
   if (env.REMINDERS_ENABLED === 'true' && !enabled) throw new Error('飞书提醒需要先配置飞书应用');
-  return { remindersEnabled: env.REMINDERS_ENABLED === 'true', mode: enabled ? 'feishu' : 'demo', host: enabled ? (env.HOST || '127.0.0.1') : '127.0.0.1', port, baseUrl,
+  const workflows=workflowConfiguration(env);
+  if (workflows.enabled && !enabled) throw new Error('审批联动需要先配置飞书应用');
+  return { workflows, remindersEnabled: env.REMINDERS_ENABLED === 'true', mode: enabled ? 'feishu' : 'demo', host: enabled ? (env.HOST || '127.0.0.1') : '127.0.0.1', port, baseUrl,
     appId: env.FEISHU_APP_ID, appSecret: env.FEISHU_APP_SECRET, adminOpenIds, tenantKey: env.FEISHU_TENANT_KEY, amapKey, amapSecurityCode };
 }
 
@@ -124,6 +128,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
   const config = configuration(env);
   const file = resolve(dataFile || join(ROOT, 'data', config.mode === 'demo' ? 'demo.json' : 'attendance.json'));
   let state = readState(file, config.mode);
+  initializeWorkflows(state);
   const sessions = new Map();
   const oauthStates = new Map();
   const commit = mutate => {
@@ -134,7 +139,10 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
     return result;
   };
   const reminders = createReminderDispatcher({ getState: () => state, commit, config,
-    send: options => sendReminderMessage({ appId: config.appId, appSecret: config.appSecret, ...options }) });
+    send: options => sendReminderMessage({ appId: config.appId, appSecret: config.appSecret, ...options }),
+    update: options => updateReminderCard({appId:config.appId,appSecret:config.appSecret,...options}) });
+  const workflowApi=config.mode==='feishu' ? createFeishuWorkflowApi(config) : null;
+  const workflows=createWorkflows({getState:()=>state,commit,config,api:workflowApi});
   const server = http.createServer(async (req, res) => {
     const json = (status, value) => { res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' }); res.end(JSON.stringify(value)); };
     const redirect = url => { res.writeHead(302, { Location: url }); res.end(); };
@@ -197,10 +205,10 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const nonce = randomBytes(32).toString('hex');
         const view = url.searchParams.get('view');
         const returnParams = new URLSearchParams();
-        for (const [key, pattern] of [['recordDate', /^\d{4}-\d{2}-\d{2}$/], ['group', /^[a-zA-Z0-9-]{1,100}$/]]) {
+        for (const [key, pattern] of [['recordDate', /^\d{4}-\d{2}-\d{2}$/], ['group', /^[a-zA-Z0-9-]{1,100}$/], ['request', /^[A-Za-z0-9_-]{1,100}$/]]) {
           const value = url.searchParams.get(key);if (value && pattern.test(value)) returnParams.set(key, value);
         }
-        const returnTo = view === 'records' ? `/${returnParams.size ? `?${returnParams}` : ''}#records` : view === 'checkin' ? '/#checkin' : '/';
+        const returnTo = /^punch=[a-f0-9]{40}$/.test(view || '') ? `/#${view}` : ['records','requests'].includes(view) ? `/${returnParams.size ? `?${returnParams}` : ''}#${view}` : view === 'checkin' ? '/#checkin' : '/';
         oauthStates.set(nonce, { expires: now + 300000, returnTo });
         setCookie('attendance_oauth', nonce, 300);
         const authorize = new URL('https://accounts.feishu.cn/open-apis/authen/v1/authorize');
@@ -230,6 +238,21 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireAuth();
         return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session, integration: { configured: config.mode === 'feishu', appId: config.appId || null, mapConfigured: Boolean(config.amapKey && config.amapSecurityCode) } });
       }
+      if (url.pathname==='/api/workflows' && req.method==='GET') {
+        requireAuth();return json(200,workflows.view(currentSession()));
+      }
+      const calendarRoute=url.pathname.match(/^\/api\/workflows\/([A-Za-z0-9_-]{1,100})\/calendar$/);
+      if (calendarRoute && req.method==='POST') {
+        requireAuth();return json(202,await workflows.requestCalendar(calendarRoute[1],auth.openId,await readBody(req)));
+      }
+      if (url.pathname==='/api/workflows.csv' && req.method==='GET') {
+        requireAuth();
+        const ids=new Set(workflows.view(currentSession()).requests.map(r=>r.id));
+        const rows=state.workflows.requests.filter(r=>ids.has(r.id)).map(approvalArchive);
+        const columns=['业务编号','类型','员工','部门','开始','结束','地点','状态','日历'];
+        res.writeHead(200,{'Content-Type':'text/csv; charset=utf-8','Content-Disposition':'attachment; filename="attendance-requests.csv"'});
+        return res.end('\ufeff'+[columns,...rows.map(r=>columns.map(k=>r[k]))].map(row=>row.map(csvCell).join(',')).join('\r\n'));
+      }
       if (url.pathname === '/api/location-timing' && req.method === 'POST') {
         requireAuth();
         const body = await readBody(req);
@@ -256,6 +279,9 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireAuth();
         const result = await reminders.test(auth.openId);
         return json(result.status === 'sent' ? 200 : 502, result);
+      }
+      if (url.pathname==='/api/reminders/punch' && req.method==='GET') {
+        requireAuth();return json(200,reminderPunch(state,auth.openId,url.searchParams.get('key')));
       }
       if (url.pathname === '/api/maps/config' && req.method === 'GET') {
         requireAdmin();
@@ -376,7 +402,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
               employee = { id: randomUUID(), employeeNo: '', openId: user.openId, orgAdmin: false };
               next.employees.push(employee);
             }
-            Object.assign(employee, { name: user.name, department: user.department, groupId: input.groupId });
+            Object.assign(employee, { name: user.name, department: user.department, groupId: input.groupId, disabled: false });
           }
         });
         return json(200, { count: users.length });
@@ -456,6 +482,11 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const preview = url.pathname.endsWith('/preview');
         if (preview && config.mode !== 'demo') throw new DomainError('规则试算仅在本地演示开放', 403);
         const input = await readBody(req);
+        if (input.reminderKey && !preview) {
+          const result=reminderPunch(state,auth.openId,input.reminderKey);
+          Object.assign(input,result.input);
+          if (result.record) {void reminders.syncCompleted().catch(()=>{});return json(200,{preview:false,record:result.record});}
+        }
         if (config.mode === 'feishu' && input.employeeId !== session.employeeId) throw new DomainError('只能为本人打卡', 403);
         const timestamp = preview && input.timestamp ? new Date(input.timestamp) : new Date();
         if (!Number.isFinite(timestamp.getTime())) throw new DomainError('试算时间格式不正确');
@@ -466,7 +497,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const record = { ...draft, id: randomUUID(), groupId: state.schedules.find(s => s.id === draft.scheduleId).groupId, source: config.mode, employeeNo: employee.employeeNo,
           latitude: input.latitude, longitude: input.longitude, locatedAt: input.locatedAt,
           radius: location.radius, coordinateSystem: input.coordinateSystem, centerCoordinateSystem: location.coordinateSystem || 'wgs84', centerLatitude: location.latitude, centerLongitude: location.longitude, scheduledStart: segment.start, scheduledEnd: segment.end };
-        if (!preview) commit(next => { next.records.push(record); });
+        if (!preview) {commit(next => { next.records.push(record); });void reminders.syncCompleted().catch(()=>{});}
         return json(200, { preview, record });
       }
       if (url.pathname.startsWith('/api/')) throw new DomainError('接口不存在', 404);
@@ -486,13 +517,20 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
     }
   });
   let reminderTimer;
+  let workflowTimer, events;
   server.on('listening', () => {
-    if (!config.remindersEnabled) return;
-    const tick = () => reminders.run().catch(() => console.error('提醒处理失败，请检查数据文件与磁盘状态'));
-    reminderTimer = setInterval(tick, 30_000);
-    reminderTimer.unref();tick();
+    if (config.remindersEnabled) {
+      const tick = () => reminders.run().catch(() => console.error('提醒处理失败，请检查数据文件与磁盘状态'));
+      reminderTimer = setInterval(tick, 30_000);
+      reminderTimer.unref();tick();
+    }
+    if (config.workflows.enabled) {
+      const tick=()=>workflows.run().catch(()=>console.error('联动队列写入失败，请检查磁盘状态'));
+      events=startFeishuEvents(config,workflows);
+      workflowTimer=setInterval(tick,5000);workflowTimer.unref();tick();
+    }
   });
-  server.on('close', () => clearInterval(reminderTimer));
+  server.on('close', () => {clearInterval(reminderTimer);clearInterval(workflowTimer);events?.close({force:true});});
   server.requestTimeout = 15000;
   server.headersTimeout = 10000;
   return { server, config };

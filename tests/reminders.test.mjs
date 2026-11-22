@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dueReminders, createReminderDispatcher, initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory } from '../reminders.mjs';
+import { dueReminders, createReminderDispatcher, initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, reminderPunch } from '../reminders.mjs';
 import { visibleState, sessionFor } from '../access.mjs';
 
 const config = { baseUrl: 'https://attendance.example.com', adminOpenIds: ['ou_org'], remindersEnabled: true };
@@ -47,16 +47,44 @@ test('Review reminders aggregate by group and punch time, follow current manager
 test('Employee reminders are native cards with shift time, a plain-text location and one direct punch button', () => {
   const state=fixture();state.locations=[{id:'office',name:'测试楼 <at id=all> & [链接](https://example.org)'}];
   state.schedules[0].segments[0].locationId='office';
-  const {card}=dueReminders(state,config,at('08:45')).find(item=>item.openId==='ou_a');
+  const {card,key}=dueReminders(state,config,at('08:45')).find(item=>item.openId==='ou_a');
   assert.equal(card.schema,'2.0');assert.equal(card.config.enable_forward,false);
   assert.equal(card.header.title.content,'上班打卡提醒');assert.match(card.header.subtitle.content,/2040-01-02.*09:00/);
   const details=card.body.elements[0].columns[0].elements[0].text;
   assert.equal(details.tag,'plain_text');assert.ok(details.content.includes(state.locations[0].name),'names cannot inject card mentions or links');
   const button=card.body.elements.at(-1);
   assert.equal(button.text.content,'去打卡');assert.equal(button.type,'primary_filled');
-  assert.deepEqual(button.behaviors,[{type:'open_url',default_url:'https://attendance.example.com/#checkin'}]);
+  assert.deepEqual(button.behaviors,[{type:'open_url',default_url:`https://attendance.example.com/#punch=${key}`}]);
+  assert.equal(card.config.update_multi,true);
   assert.equal(card.body.elements.filter(element=>element.tag==='button').length,1);
   assert.equal(dueReminders(state,config,at('17:45'))[0].card.header.title.content,'下班打卡提醒');
+});
+
+test('A reminder binds to its recipient and exact shift; edits invalidate an uncompleted card',async()=>{
+  let state=fixture();state.schedules.splice(1);
+  const worker=createReminderDispatcher({getState:()=>state,config,now:()=>at('08:45'),commit:fn=>fn(state),send:async()=> 'om_bound'});
+  await worker.run();const row=state.reminders.deliveries[0];
+  assert.equal(reminderPunch(state,'ou_a',row.key).input.kind,'in');
+  assert.throws(()=>reminderPunch(state,'ou_b',row.key),/不可用/);
+  state.schedules[0].segments[0].start='10:00';
+  assert.throws(()=>reminderPunch(state,'ou_a',row.key),/已调整/);
+  state.schedules[0].segments[0].start='09:00';state.employees[0].disabled=true;
+  assert.throws(()=>reminderPunch(state,'ou_a',row.key),/不可用/);
+});
+
+test('Completed punches update only the original card; a failed update retries after restart without sending or punching again',async()=>{
+  let state=fixture(),now=at('08:45'),updates=0;state.schedules.splice(1);
+  const options={getState:()=>state,config,now:()=>now,commit:fn=>{state=structuredClone(state);fn(state);},send:async()=> 'om_original',update:async({messageId,card})=>{
+    updates++;assert.equal(messageId,'om_original');assert.equal(card.header.title.content,'打卡成功');assert.equal(card.config.update_multi,true);
+    assert.doesNotMatch(JSON.stringify(card),/longitude|latitude|ou_a|#punch=/);
+    if(updates===1)throw new Error('network-private');
+  }};
+  const worker=createReminderDispatcher(options);await worker.run();
+  state.records.push({id:'r',employeeId:'a',scheduleId:'a',segmentIndex:0,kind:'in',date:'2040-01-02',timestamp:new Date(at('09:00')).toISOString(),locationName:'园区',status:'normal'});
+  await worker.syncCompleted();assert.equal(updates,1);await worker.syncCompleted();assert.equal(updates,1);
+  now+=60_000;await createReminderDispatcher(options).syncCompleted();assert.equal(updates,2);
+  assert.equal(reminderPunch(state,'ou_a',state.reminders.deliveries[0].key).cardUpdated,true);
+  await worker.syncCompleted();assert.equal(updates,2);assert.equal(state.records.length,1);
 });
 
 test('Reminders cross midnight using schedule dates in Beijing time', () => {

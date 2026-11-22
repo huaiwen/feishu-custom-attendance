@@ -2,7 +2,7 @@
 
 本项目作为独立的企业自建考勤网页应用运行。飞书提供工作台入口、OAuth 身份和手机定位；本应用负责人员、地点、班次模板、精细排班、打卡记录与自建考勤统计。官方排班、流水和结果同步是可选扩展，独立版本上线不以这些同步为前提。
 
-仓库提供 OAuth 登录、H5 JSAPI 签名和手机定位代码。部署者需创建或选择自己的企业自建应用，并验证真实账号登录、定位及工作台入口。以下统一使用 `https://attendance.example.com` 作为占位地址，需替换为实际 HTTPS 根地址。
+仓库提供飞书客户端免登、OAuth 登录、H5 JSAPI 签名和手机定位代码。部署者需创建或选择自己的企业自建应用，并验证真实账号登录、定位及工作台入口。以下统一使用 `https://attendance.example.com` 作为占位地址，需替换为实际 HTTPS 根地址。
 
 ## 1. 准备服务地址
 
@@ -97,7 +97,7 @@ HOST=0.0.0.0
 
 管理员搜索地点后在地图上确认中心、调整半径。底图使用高德地图，新地点按 GCJ-02 保存；旧 WGS84 点显示时由固定版本 gcoord 转换。服务端以手机实际返回的坐标系转换后校验距离，记录同时保留定位坐标系和中心坐标系。未知或缺失坐标系仍拒绝。地图标注误差和转换不能替代实际手机的现场校准。
 
-打卡只校验打卡时刻的位置，不能证明某人全天持续在岗。浏览器或客户端提交的坐标也不构成不可伪造的硬件证明。当前未实现跨日班次、请假/加班审批、补卡审批、假期余额、薪资结算及 Wi-Fi/人脸防作弊；这些功能有独立的开发与验收范围，不能仅靠调用登录或流水 API 获得。
+打卡只校验打卡时刻的位置，不能证明某人全天持续在岗。浏览器或客户端提交的坐标也不构成不可伪造的硬件证明。请假与加班通过原生审批联动，见[接入说明](workflows.md)。当前未实现跨日班次、补卡审批、假期余额、薪资结算及 Wi-Fi/人脸防作弊。
 
 官方 GPS 考勤地点按考勤组设置，同组多个地点允许在其中任一地点打卡。已核验的公开字段没有直接表达本项目个人时段地点约束，因此采用自建入口和自建统计。若后续选择导入流水，官方 `check_result` 入参不会覆盖官方判定，届时应区分自建结果和官方结果。[官方 GPS 规则](https://www.feishu.cn/hc/en-US/articles/360049067406-admin-set-up-gps-attendance)、[导入流水限制](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/attendance-v1/user_flow/batch_create)
 
@@ -112,7 +112,7 @@ HOST=0.0.0.0
 
 当前内置该固定版本的 JSSDK，仅将两处获取全局对象的 `new Function("return this;")()` 改为 `globalThis`，避免未登录页面因 CSP 禁止动态执行而加载失败。修改和文件哈希见 `public/vendor/FEISHU-SDK-NOTICE.md`；这没有放宽登录页、普通用户或组管理员的 CSP。
 
-已登录的前端通过 `GET /api/feishu/jsapi-config?url=...` 获取 JSAPI 配置，`url` 使用 `encodeURIComponent(location.href.split('#')[0])`。服务端仅为 `BASE_URL` 同源页面签名。前端把配置交给 `h5sdk.config`，同时等待 `h5sdk.ready` 和 `config.onSuccess` 后才调用 `tt.getLocation({ timeout: 15, cacheTimeout: 0, accuracy: 'best', success, fail })`；鉴权失败或超时会停止定位并允许重试。前端保留实际返回的坐标系 `type`，后端仅接受 `wgs84` 或 `gcj02`，按实际坐标系转换后计算距离，不允许缺失或误标。新增地点的地图选点默认保存 GCJ-02，旧地点保持原坐标系。
+已登录的前端通过 `GET /api/feishu/jsapi-config?url=...` 获取 JSAPI 配置，`url` 使用 `encodeURIComponent(location.href.split('#')[0])`。服务端仅为 `BASE_URL` 同源页面签名。前端把配置交给 `h5sdk.config`，同时等待 `h5sdk.ready` 和 `config.onSuccess` 后才调用 `tt.getLocation({ timeout: 5, cacheTimeout: 0, accuracy: 'best', success, fail })`；鉴权失败或超时会停止定位并允许重试。使用官方默认的五秒等待时间，仍请求约 20 米的最佳精度；返回结果继续由服务端按实际精度和围栏校验，不能把超时参数当成成功保证。前端保留实际返回的坐标系 `type`，后端仅接受 `wgs84` 或 `gcj02`，按实际坐标系转换后计算距离，不允许缺失或误标。新增地点的地图选点默认保存 GCJ-02，旧地点保持原坐标系。
 
 本地测试覆盖 API 请求字段、错误脱敏、凭证过期、并发刷新与签名计算；它不等于真实飞书租户、真实手机或现场定位验收。
 
@@ -131,7 +131,3 @@ HOST=0.0.0.0
 成员转组不改写历史排班和打卡归属。初始组织管理员由 `ADMIN_OPEN_IDS` 保留；其他角色由组织管理员在成员考勤设置中指定，组管理员也可在考勤组设置中指定。
 
 接口依据：[通讯录授权范围](https://open.feishu.cn/document/server-docs/contact-v3/scope/list)、[部门直属成员](https://open.feishu.cn/document/server-docs/contact-v3/user/find_by_department)、[批量用户](https://open.feishu.cn/document/server-docs/contact-v3/user/batch)、[子部门列表](https://open.feishu.cn/document/server-docs/contact-v3/department/children)。
-
-## 飞书内免登（0.4.4）
-
-工作台和卡片打开后自动调用官方 requestAccess，服务端换取身份并创建本应用会话。自动登录保留当前页面；SDK不支持、用户取消或失败时保留手动登录入口。退出只退出本应用，并暂停当前页面自动登录。授权码、token和Secret不进入浏览器存储或日志。

@@ -1,6 +1,6 @@
 {
   "name": "custom-attendance",
-  "version": "0.4.6",
+  "version": "0.5.0",
   "private": true,
   "type": "module",
   "description": "自定义考勤：按人、日期、时段和地点排班",
@@ -11,5 +11,8 @@
     "start": "node --env-file-if-exists=.env server.mjs",
     "dev": "node --env-file-if-exists=.env --watch server.mjs",
     "test": "node --test tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "1.76.0"
   }
 }

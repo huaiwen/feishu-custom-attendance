@@ -11,7 +11,7 @@
 
 ## 构建与启动
 
-在项目根目录构建镜像。镜像基于官方 `node:24-alpine`，无需执行 `npm install`，以非 root 的 `node` 用户运行。构建只复制运行文件；`.env`、实际数据和测试产物被排除。
+在项目根目录构建镜像。镜像基于官方 `node:24-alpine`，用锁文件执行 `npm ci --omit=dev --ignore-scripts`，以非 root 的 `node` 用户运行。构建只复制运行文件；`.env`、实际数据和测试产物被排除。
 
 ```sh
 docker build --pull -t custom-attendance:local .

@@ -2,6 +2,7 @@ import { DomainError } from './domain.mjs';
 
 export function sessionFor(state, openId, adminOpenIds, demo = false) {
   const employee = state.employees.find(e => e.openId && e.openId === openId);
+  if (employee?.disabled && !demo) return null;
   const managedGroupIds = state.groups.filter(g => g.adminIds.includes(employee?.id)).map(g => g.id);
   const role = demo || adminOpenIds.includes(openId) || employee?.orgAdmin === true ? 'org_admin' : managedGroupIds.length ? 'group_admin' : 'user';
   return { role, employeeId: employee?.id || null, managedGroupIds };
@@ -23,7 +24,7 @@ export function visibleState(state, session, adminOpenIds) {
   const schedules = state.schedules.filter(canRead);
   const locationIds = new Set(schedules.flatMap(s => s.segments.map(p => p.locationId)));
   const own = state.employees.find(e => e.id === session.employeeId);
-  const { reminders, ...attendance } = state;
+  const { reminders, workflows, ...attendance } = state;
   return { ...attendance,
     groups: state.groups.filter(g => org || session.managedGroupIds.includes(g.id) || g.id === own?.groupId)
       .map(g => manager ? g : { id: g.id, name: g.name }),

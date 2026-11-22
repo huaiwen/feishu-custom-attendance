@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { exchangeCode, getJsapiConfig, sendReminderMessage } from '../feishu.mjs';
+import { exchangeCode, getJsapiConfig, sendReminderMessage, updateReminderCard } from '../feishu.mjs';
 
 const response = data => ({ ok: true, json: async () => data });
 
@@ -135,4 +135,13 @@ test('Reminder messages use this application identity, direct open_id recipients
   await assert.rejects(sendReminderMessage({...input,openId:'email@example.com'}),/格式/);
   await assert.rejects(sendReminderMessage({...input,card:{}}),/格式/);
   await assert.rejects(sendReminderMessage({...input,card:{...card,extra:'中'.repeat(11000)}}),/过长/);
+});
+
+test('Card updates use the sending app and PATCH only a validated stored message ID',async()=>{
+  const calls=[],card={schema:'2.0',config:{update_multi:true},body:{elements:[{tag:'div',text:{tag:'plain_text',content:'打卡成功'}}]}};
+  const input={appId:'cli_update',appSecret:'secret',messageId:'om_original',card,fetch:async(url,options)=>{calls.push({url,options});return response(url.includes('/tenant_access_token/')?{code:0,tenant_access_token:'private-token',expire:7200}:{code:0});}};
+  await updateReminderCard(input);assert.equal(calls[1].options.method,'PATCH');assert.equal(calls[1].url,'https://open.feishu.cn/open-apis/im/v1/messages/om_original');
+  assert.deepEqual(JSON.parse(calls[1].options.body),{content:JSON.stringify(card)});
+  await assert.rejects(updateReminderCard({...input,messageId:'om_a/../../users'}),/格式/);
+  await assert.rejects(updateReminderCard({...input,card:{...card,config:{}}}),/格式/);
 });

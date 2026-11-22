@@ -72,12 +72,14 @@ test('Workbench data is own-only, bound to the enterprise and independent of web
 
 test('Native widget auto signs in, refreshes after returning, and never requests or submits GPS itself', async () => {
   const source=await readFile(new URL('../widget/block/index.js',import.meta.url),'utf8');
-  let definition, logins=0, pending, opened, now=1000;
+  let definition, logins=0, pending, opened, now=1000, menuListener, menuRegistrations=0;
   const context=createContext({require:()=>({baseUrl:'https://attendance.example.com',appId:'cli_test'}),Date:{now:()=>now},Block:value=>{definition=value;},
-    tt:{login({success}){logins++;success({code:'fresh-code'});},request(options){assert.deepEqual(JSON.parse(JSON.stringify(options.data)),{code:'fresh-code'});pending=options;return {abort(){}};},openSchema(options){opened=options;}}});
+    tt:{login({success}){logins++;success({code:'fresh-code'});},request(options){assert.deepEqual(JSON.parse(JSON.stringify(options.data)),{code:'fresh-code'});pending=options;return {abort(){}};},openSchema(options){opened=options;},
+      onMenuItemTap(listener){menuListener=listener;menuRegistrations++;},offMenuItemTap(listener){assert.equal(listener,menuListener);menuListener=null;}}});
   runInContext(source,context);
   const widget={data:structuredClone(definition.data),setData(patch){Object.assign(this.data,patch);}};
   definition.onLoad.call(widget);definition.onShow.call(widget);assert.equal(logins,1);
+  assert.equal(menuRegistrations,1);menuListener({key:'unrelated'});assert.equal(logins,1);
   pending.success({statusCode:200,data:{date:'2026-11-22',completed:1,total:4,remaining:[{time:'12:00',kind:'out',locationName:'第一园区',expired:true},{time:'13:00',kind:'in',locationName:'第二园区',expired:false},{time:'18:00',kind:'out',locationName:'第二园区',expired:false}]}});
   assert.equal(widget.data.remaining,3);assert.equal(widget.data.places,'待打地点：第一园区、第二园区');assert.equal(widget.data.next,'13:00 上班 · 第二园区');
   definition.methods.openAttendance.call(widget);assert.equal(new URL(opened.schema).origin,'https://applink.feishu.cn');assert.equal(new URL(opened.schema).searchParams.get('appId'),'cli_test');assert.equal(new URL(opened.schema).searchParams.get('lk_target_url'),'https://attendance.example.com/#checkin');assert.equal(opened.external,false);
@@ -86,5 +88,8 @@ test('Native widget auto signs in, refreshes after returning, and never requests
   pending.success({statusCode:200,data:{date:'2026-11-22',completed:4,total:4,remaining:[]}});
   assert.equal(widget.data.remaining,0);definition.methods.openAttendance.call(widget);assert.equal(new URL(opened.schema).searchParams.get('lk_target_url'),'https://attendance.example.com/#records');
   definition.methods.refresh.call(widget);pending.fail();assert.match(widget.data.error,/连接失败/);assert.equal(widget.data.loading,false);
-  definition.onDestroy.call(widget);definition.methods.refresh.call(widget);assert.equal(logins,3);
+  menuListener({key:'refresh'});assert.equal(logins,4);pending.fail();
+  menuListener({menuItem:{key:'refresh'}});assert.equal(logins,5);pending.fail();
+  assert.equal(menuRegistrations,1);
+  definition.onDestroy.call(widget);definition.methods.refresh.call(widget);assert.equal(logins,5);assert.equal(menuListener,null);
 });

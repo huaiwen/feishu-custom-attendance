@@ -49,9 +49,9 @@ test('Employee reminders are native cards with shift time, a plain-text location
   state.schedules[0].segments[0].locationId='office';
   const {card,key}=dueReminders(state,config,at('08:45')).find(item=>item.openId==='ou_a');
   assert.equal(card.schema,'2.0');assert.equal(card.config.enable_forward,false);
-  assert.equal(card.header.title.content,'上班打卡提醒');assert.equal(card.header.subtitle.content,'2040-01-02');
-  assert.equal(card.body.elements[0].columns[0].elements[1].text.content,'09:00');
-  const details=card.body.elements[0].columns[0].elements[2].text;
+  assert.equal(card.header.title.content,'上班打卡提醒');assert.equal(card.header.template,'blue');
+  const details=card.body.elements[0].text;
+  assert.match(details.content,/打卡日期：2040-01-02/);assert.match(details.content,/计划时间：09:00/);
   assert.equal(details.tag,'plain_text');assert.ok(details.content.includes(state.locations[0].name),'names cannot inject card mentions or links');
   const button=card.body.elements.at(-1);
   assert.equal(button.text.content,'去打卡');assert.equal(button.type,'primary_filled');

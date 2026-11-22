@@ -2,6 +2,13 @@ const { baseUrl, appId } = require('./config');
 
 function loadAttendance() {
       if (this.busy || this.destroyed) return;
+      if (!this.menuTap && tt.onMenuItemTap) {
+        this.menuTap = event => {
+          // The official table and example describe nested and flat menu items.
+          if ((event.menuItem || event).key === 'refresh') loadAttendance.call(this);
+        };
+        tt.onMenuItemTap(this.menuTap);
+      }
       this.busy = true;
       this.setData({ loading: true, error: '' });
       const finish = patch => {
@@ -40,7 +47,11 @@ Block({
   onLoad() { loadAttendance.call(this); },
   onShow() { if (!this.lastLoaded || Date.now() - this.lastLoaded > 1000) loadAttendance.call(this); },
   onActivate() { loadAttendance.call(this); },
-  onDestroy() { this.destroyed = true; if (this.requestTask) this.requestTask.abort(); },
+  onDestroy() {
+    this.destroyed = true;
+    if (this.requestTask) this.requestTask.abort();
+    if (this.menuTap && tt.offMenuItemTap) tt.offMenuItemTap(this.menuTap);
+  },
   methods: {
     refresh: loadAttendance,
     openAttendance() {

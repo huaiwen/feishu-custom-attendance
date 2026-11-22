@@ -35,9 +35,7 @@ export function reminderCard(title, subtitle, details, button, url) {
   return { schema:'2.0', config:{width_mode:'compact',enable_forward:false,update_multi:true,summary:{content:`${title} · ${subtitle}`}},
     header:{title:{tag:'plain_text',content:title},subtitle:{tag:'plain_text',content:subtitle},template:'blue'},
     body:{direction:'vertical',padding:'12px',vertical_spacing:'12px',elements:[
-      {tag:'column_set',flex_mode:'none',background_style:'blue-50',columns:[{tag:'column',width:'weighted',weight:1,padding:'12px',elements:[
-        {tag:'div',text:{tag:'plain_text',content:details}},
-      ]}]},
+      {tag:'div',text:{tag:'plain_text',content:details}},
       {tag:'button',text:{tag:'plain_text',content:button},type:'primary_filled',width:'fill',size:'large',behaviors:[{type:'open_url',default_url:url}]},
     ]},
   };
@@ -63,29 +61,22 @@ function attendanceCard(state, config, {employeeId,date,target,record,now,test=f
   const status=record && ({normal:'正常',late:'迟到',early:'早退'}[record.status] || record.status);
   const progress=remaining.length?`${day}还剩 ${remaining.length} 次打卡`:punches.length?`${day}打卡已全部完成`:`${day}暂无排班`;
   const text=(content,size='normal',color='default')=>({tag:'div',text:{tag:'plain_text',content,text_size:size,text_color:color}});
-  const block=(elements,background='default',padding='0px')=>({tag:'column_set',flex_mode:'none',columns:[{tag:'column',width:'weighted',weight:1,background_style:background,padding,vertical_spacing:'8px',elements}]});
   const time=record?new Intl.DateTimeFormat('zh-CN',{timeZone:'Asia/Shanghai',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(record.timestamp)):current?.time;
   const title=test?'灵活考勤 · 测试提醒':record?'打卡成功':`${label}打卡提醒`;
   const focus=record || current;
-  const hero=focus
-    ? [text(record?`${label}已打卡 · ${status}`:`本次${label}${current.expired?' · 已过可打时间':''}`,'normal',record?'green':'blue'),text(time,'heading-1'),text(focus.locationName)]
-    : [text(progress,'heading-2'),text(`${completed} / ${punches.length} 次已完成`,'normal','grey')];
-  const details=[...(focus?[text(progress,'heading-3'),text(`已完成 ${completed} / ${punches.length} 次${!record && current && !current.done?' · 剩余含本次':''}`,'notation','grey')]:[])];
-  for (const p of remaining) {
-    const isCurrent=p===current;
-    details.push({tag:'column_set',flex_mode:'none',horizontal_spacing:'12px',columns:[
-      {tag:'column',width:'auto',elements:[text(p.time,'normal',isCurrent?'blue':'default')]},
-      {tag:'column',width:'weighted',weight:1,vertical_spacing:'4px',elements:[text(`${p.kind==='in'?'上班':'下班'} · ${p.locationName}`),
-        ...(p.expired?[text('已过可打时间','notation','grey')]:isCurrent?[text('本次打卡','notation','blue')]:[])]},
-    ]});
-  }
-  if (!remaining.length) details.push(text(punches.length?'当天的打卡都已记录，可查看明细。':'安排班次后，这里会显示时间和地点。','normal','grey'));
+  const fields=[`打卡日期：${date}`];
+  if (focus) fields.push(`打卡类型：${label}`,`${record?'打卡时间':'计划时间'}：${time}`,`打卡地点：${focus.locationName}`);
+  if (record) fields.push(`打卡结果：${status}`);
+  const details=[text(fields.join('\n')),
+    text(`${progress}\n已完成 ${completed} / ${punches.length} 次${!record && current && !current.done?' · 剩余含本次':''}`)];
+  if (remaining.length) details.push(text(remaining.map(p=>`${p.time} ${p.kind==='in'?'上班':'下班'} · ${p.locationName}${p.expired?'（已过可打时间）':p===current?'（本次）':''}`).join('\n')));
+  if (!punches.length) details.push(text('安排班次后，这里会显示时间和地点。','notation','grey'));
   if (remaining.some(p=>p.expired)) details.push(text('过时未打的记录，请联系考勤管理员。','notation','grey'));
   const canPunch=current && !current.done && !current.expired && !record && !test;
   return {schema:'2.0',config:{width_mode:'compact',enable_forward:false,update_multi:true,summary:{content:`${title} · ${progress}`}},
-    header:{title:{tag:'plain_text',content:title},subtitle:{tag:'plain_text',content:date},template:record?'green':'default',icon:{tag:'standard_icon',token:'calendar_colorful'},padding:'16px'},
-    body:{direction:'vertical',padding:'16px',vertical_spacing:'16px',elements:[
-      block(hero,record?'green-50':'blue-50','16px'),block(details),
+    header:{title:{tag:'plain_text',content:title},template:record?'green':'blue',padding:'12px'},
+    body:{direction:'vertical',padding:'12px',vertical_spacing:'12px',elements:[
+      ...details,
       ...(canPunch?[text(target.kind==='out'?'点击即定位并提交，提前下班会记为早退。':'点击即通过飞书定位并提交打卡。','notation','grey')]:[]),
       {tag:'button',text:{tag:'plain_text',content:canPunch?'去打卡':record?'查看我的记录':'查看今日打卡'},type:'primary_filled',width:'fill',size:'large',behaviors:[{type:'open_url',default_url:canPunch?`${config.baseUrl}/#punch=${target.key}`:record?`${config.baseUrl}/?recordDate=${date}#records`:`${config.baseUrl}/#checkin`}]},
     ]},

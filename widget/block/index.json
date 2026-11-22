@@ -4,5 +4,9 @@
   "useStartLoading": false,
   "darkmode": false,
   "showFrame": true,
-  "workplace": {"needHeader": false}
+  "workplace": {
+    "needHeader": true,
+    "title": {"zh_cn": "灵活考勤", "en_us": "Flexible Attendance"},
+    "menuItems": [{"key": "refresh", "name": {"zh_cn": "刷新", "en_us": "Refresh"}}]
+  }
 }

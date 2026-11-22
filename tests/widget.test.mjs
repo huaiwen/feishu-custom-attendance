@@ -82,6 +82,8 @@ test('Native widget auto signs in, refreshes after returning, and never requests
   const widget={data:structuredClone(definition.data),setData(patch){Object.assign(this.data,patch);}};
   definition.onLoad.call(widget);definition.onShow.call(widget);assert.equal(logins,1);
   definition.onReady.call(widget);assert.equal(widget.data.expanded,false);
+  resizeListener({width:416,height:239});assert.equal(widget.data.expanded,false);
+  resizeListener({width:416,height:240});assert.equal(widget.data.expanded,true);
   resizeListener({width:370,height:241});assert.equal(widget.data.expanded,true);
   assert.equal(menuRegistrations,1);menuListener({key:'unrelated'});assert.equal(logins,1);
   pending.success({statusCode:200,data:{date:'2026-11-22',completed:1,total:4,remaining:[{time:'12:00',kind:'out',locationName:'第一园区',expired:true},{time:'13:00',kind:'in',locationName:'第二园区',expired:false},{time:'18:00',kind:'out',locationName:'第二园区',expired:false}]}});

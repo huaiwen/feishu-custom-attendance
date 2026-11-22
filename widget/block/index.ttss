@@ -1,12 +1,16 @@
 /* The native title owns the header; the tested 150px iPhone frame leaves a 106px body. */
 .attendance { display: flex; flex-direction: column; width: 100%; padding: 8px 12px; box-sizing: border-box; background-color: #ffffff; }
 .content { display: flex; flex-direction: column; width: 100%; height: 86px; flex-shrink: 0; }
-.expanded { height: 204px; }
+.attendance-expanded { padding: 16px; }
+.expanded { height: 208px; }
 .schedule { display: flex; flex-direction: column; width: 100%; margin-top: 8px; flex-shrink: 0; }
 .schedule-heading { height: 22px; font-size: 14px; line-height: 22px; font-weight: 500; color: #1f2329; }
 .schedule-row { display: flex; flex-direction: row; align-items: center; width: 100%; height: 30px; flex-shrink: 0; }
 .schedule-label { width: 0px; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 22px; font-size: 14px; line-height: 22px; color: #1f2329; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
 .schedule-status { margin-left: 8px; height: 22px; font-size: 12px; line-height: 22px; color: #646a73; flex-shrink: 0; }
+.status-done { color: #137333; font-weight: 600; }
+.status-pending { color: #1456f0; font-weight: 600; }
+.status-missed { color: #9a4f00; font-weight: 600; }
 .schedule-empty { height: 60px; font-size: 14px; line-height: 30px; color: #646a73; }
 .records-link { display: flex; align-items: center; height: 28px; flex-shrink: 0; }
 .records-label { height: 22px; font-size: 14px; line-height: 22px; color: #1456f0; }
@@ -27,3 +31,12 @@
 .state { display: flex; flex-direction: column; justify-content: space-between; width: 100%; height: 86px; flex-shrink: 0; }
 .error { width: 100%; height: 44px; flex-shrink: 0; font-size: 14px; line-height: 22px; color: #646a73; }
 .muted { width: 100%; height: 44px; flex-shrink: 0; font-size: 14px; line-height: 22px; color: #646a73; }
+/* The full layout uses the 240px body; compact frames keep their proven insets. */
+.expanded .count-detail { margin-left: 12px; }
+.expanded .next-place { margin-top: 8px; }
+.expanded .places { height: 18px; line-height: 18px; }
+.expanded .schedule { margin-top: 12px; }
+.expanded .schedule-heading { height: 20px; line-height: 20px; }
+.expanded .schedule-row { height: 28px; }
+.expanded .schedule-empty { height: 56px; line-height: 28px; }
+.expanded .records-link { height: 32px; align-items: flex-end; }

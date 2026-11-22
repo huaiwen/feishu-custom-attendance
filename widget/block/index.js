@@ -60,7 +60,7 @@ Block({
   data: { loading: true, error: '', errorDetail: '', remaining: 0, completed: 0, total: 0, date: '', next: '', places: '', canPunch: false, expanded: false, punches: [] },
   onLoad() { loadAttendance.call(this); },
   onReady() {
-    this.resize = ({ height }) => { if (!this.destroyed) this.setData({ expanded: height >= 220 }); };
+    this.resize = ({ height }) => { if (!this.destroyed) this.setData({ expanded: height >= 240 }); };
     if (tt.getContainerRect) tt.getContainerRect({ success: this.resize });
     if (tt.onContainerResize) tt.onContainerResize(this.resize);
   },

@@ -4,7 +4,9 @@
 
 使用飞书原生标题栏；刷新入口在标题栏的“…”菜单中。次数与40px主按钮并排，下一次打卡、地点概览分行显示。正文使用14/22和12/20字号/行高，按钮16/24，数字26/40，对齐官方[字体规范](https://open.feishu.cn/document/design-specification/design-language/font)。按官方[响应式规范](https://open.feishu.cn/document/design-specification/responsive-design/responsive-design-guidelines)使用4px倍数间距，不靠缩小字体解决溢出。
 
-容器外高不等于可用正文高度：用官方[getContainerRect](https://open.feishu.cn/document/client-docs/block/api/window/getcontainerrect)测得，本次150px配置下桌面正文150px、iPhone正文106px。旧版至少118px的内容即使设置height:100%仍会裁切。新版正文86px加上下各8px内边距，共102px；不再重复绘制标题、不把按钮放在底部。通过 getContainerRect 和 onContainerResize 获取实际可用高度：低于220px时保留已验收的紧凑布局；达到220px时增加今日前两次安排、地点、已打卡/未完成/待打卡状态及完整记录入口，正文含内边距共220px。定制工作台的容器高度按相邻组件配置，不与“我的常用”固定150px混淆。尺寸仅用于本地排版，不上传；销毁时移除监听。
+容器外高不等于可用正文高度：用官方[getContainerRect](https://open.feishu.cn/document/client-docs/block/api/window/getcontainerrect)测得，本次150px配置下桌面正文150px、iPhone正文106px。旧版至少118px的内容即使设置height:100%仍会裁切。新版正文86px加上下各8px内边距，共102px；不再重复绘制标题、不把按钮放在底部。通过 getContainerRect 和 onContainerResize 获取实际可用高度：低于240px时保留已验收的紧凑布局；达到240px时增加今日前两次安排、地点、已打卡/未完成/待打卡状态及完整记录入口，正文含内边距共240px；上下左右各16px，摘要与今日安排之间12px，底部入口留16px，避免内容堆在左上角。定制工作台的容器高度按相邻组件配置，不与“我的常用”固定150px混淆。尺寸仅用于本地排版，不上传；销毁时移除监听。
+
+状态文字保留完整标签：已打卡用绿色、待打卡用蓝色、过期未完成用橙色，并适度加粗，不只依赖颜色区分。
 
 移动端 Native 不继承文字样式，`flex` 仅等同于 `flex-grow`。文字行独立设置高度、防压缩；横向剩余空间用 `flex-basis: 0px` 分配。不能仅凭桌面预览认定 iPhone 已验收。参见官方 [TTSS 说明](https://open.feishu.cn/document/client-docs/block/block-frame/code-components-and-structure/view-layer/ttss/ttss)与 [flex 说明](https://open.feishu.cn/document/client-docs/block/block-frame/code-components-and-structure/view-layer/ttss/attributes/flexbox/flex)。
 

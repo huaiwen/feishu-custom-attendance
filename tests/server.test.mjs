@@ -227,6 +227,19 @@ test('OAuth sessions enforce employee isolation, administrator access and logout
     return { ...headers, Cookie: authorized.headers.get('set-cookie').split(';')[0] };
   }
   const workerHeaders = await login('worker','?view=records&recordDate=2026-11-23&group=default-group&redirect=https://evil.example');
+  const timing = {stage:'locate',durationMs:15300,outcome:'ok'};
+  const timingLogs = t.mock.method(console,'info',() => {});
+  const beforeTiming = await readFile(file,'utf8');
+  assert.equal((await app.request('/api/location-timing',{method:'POST',headers,data:timing})).status,401);
+  assert.equal((await app.request('/api/location-timing',{method:'POST',headers:{...workerHeaders,Origin:'https://evil.example'},data:timing})).status,403);
+  for (const data of [{...timing,latitude:40},{...timing,openId:'ou_worker'},{...timing,durationMs:-1},{...timing,durationMs:180001},{...timing,durationMs:'500'},{...timing,stage:'unknown'},{...timing,outcome:'raw SDK error'}]) {
+    assert.equal((await app.request('/api/location-timing',{method:'POST',headers:workerHeaders,data})).status,400);
+  }
+  for(let i=0;i<30;i++) assert.equal((await app.request('/api/location-timing',{method:'POST',headers:workerHeaders,data:timing})).status,200);
+  assert.equal((await app.request('/api/location-timing',{method:'POST',headers:workerHeaders,data:timing})).status,429);
+  assert.deepEqual(timingLogs.mock.calls[0].arguments,['location-timing',JSON.stringify(timing)]);
+  assert.equal(timingLogs.mock.calls.length,30);
+  assert.equal(await readFile(file,'utf8'),beforeTiming,'diagnostics never change attendance data');
   const visible = await (await app.request('/api/state', { headers: workerHeaders })).json();
   assert.deepEqual(visible.session, { role: 'user', employeeId: 'worker', managedGroupIds: [] });
   assert.deepEqual(visible.employees.map(e => e.id), ['worker']);

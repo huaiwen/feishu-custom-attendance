@@ -31,16 +31,30 @@ export function reminderHistory(state, openId) {
     .map(({ type, attemptedAt, sentAt, status, error }) => ({ type, attemptedAt, sentAt, status, error }));
 }
 
+function reminderCard(title, subtitle, details, button, url) {
+  return { schema:'2.0', config:{width_mode:'compact',enable_forward:false,summary:{content:`${title} · ${subtitle}`}},
+    header:{title:{tag:'plain_text',content:title},subtitle:{tag:'plain_text',content:subtitle},template:'blue'},
+    body:{direction:'vertical',padding:'12px',vertical_spacing:'12px',elements:[
+      {tag:'column_set',flex_mode:'none',background_style:'blue-50',columns:[{tag:'column',width:'weighted',weight:1,padding:'12px',elements:[
+        {tag:'div',text:{tag:'plain_text',content:details}},
+      ]}]},
+      {tag:'button',text:{tag:'plain_text',content:button},type:'primary_filled',width:'fill',size:'large',behaviors:[{type:'open_url',default_url:url}]},
+    ]},
+  };
+}
+
 export function dueReminders(state, config, now) {
   const candidates = new Map();
-  const add = (type, openId, subject, schedule, kind, time, dueAt) => {
+  const add = (type, openId, subject, schedule, segment, kind, time, dueAt) => {
     if (now < dueAt || now >= dueAt + WINDOW) return;
     const key = createHash('sha256').update(JSON.stringify([type, openId, subject, schedule.date, kind, time])).digest('hex').slice(0, 40);
     const label = kind === 'in' ? '上班' : '下班';
-    const text = type === 'checkin'
-      ? `打卡提醒\n${schedule.date} ${time} ${label}，请按排班到指定地点打卡。\n已打卡请忽略。\n打开今日打卡：${config.baseUrl}/#checkin`
-      : `考勤记录提醒\n${state.groups.find(g => g.id === schedule.groupId)?.name || '考勤组'} · ${schedule.date} ${time} ${label}\n请查看该组的打卡记录与异常情况。\n查看考勤记录：${config.baseUrl}/?recordDate=${schedule.date}&group=${encodeURIComponent(schedule.groupId)}#records`;
-    candidates.set(key, { key, openId, type, dueAt, text });
+    const card = type === 'checkin'
+      ? reminderCard(`${label}打卡提醒`,`${schedule.date} · ${time}`,
+        `打卡地点：${state.locations.find(location => location.id === segment.locationId)?.name || '排班指定地点'}\n请在指定范围内打卡，已打卡请忽略。`,'去打卡',`${config.baseUrl}/#checkin`)
+      : reminderCard('考勤记录待查看',`${schedule.date} · ${time} ${label}`,
+        `考勤组：${state.groups.find(g => g.id === schedule.groupId)?.name || '考勤组'}\n请查看本次打卡记录与异常情况。`,'查看记录',`${config.baseUrl}/?recordDate=${schedule.date}&group=${encodeURIComponent(schedule.groupId)}#records`);
+    candidates.set(key, { key, openId, type, dueAt, card });
   };
   const orgAdmins = [...new Set([...config.adminOpenIds, ...state.employees.filter(e => e.orgAdmin).map(e => e.openId).filter(Boolean)])];
   for (const schedule of state.schedules) {
@@ -56,11 +70,11 @@ export function dueReminders(state, config, now) {
         if (employee.openId) {
           const pref = reminderPreferences(state, employee.openId, 'user');
           const punched = state.records.some(r => r.scheduleId === schedule.id && r.segmentIndex === index && r.kind === kind);
-          if (pref.checkinEnabled && !punched) add('checkin', employee.openId, employee.id, schedule, kind, time, scheduledAt - pref.beforeMinutes * MINUTE);
+          if (pref.checkinEnabled && !punched) add('checkin', employee.openId, employee.id, schedule, segment, kind, time, scheduledAt - pref.beforeMinutes * MINUTE);
         }
         for (const openId of reviewers) {
           const pref = reminderPreferences(state, openId, sessionFor(state, openId, config.adminOpenIds).role);
-          if (pref.reviewEnabled) add('review', openId, group.id, schedule, kind, time, scheduledAt + pref.afterMinutes * MINUTE);
+          if (pref.reviewEnabled) add('review', openId, group.id, schedule, segment, kind, time, scheduledAt + pref.afterMinutes * MINUTE);
         }
       }
     }
@@ -82,7 +96,7 @@ export function createReminderDispatcher({ getState, commit, config, send, now =
     saveAttempt(item);
     let status, messageId, error;
     try {
-      messageId = await send({ openId: item.openId, text: item.text, uuid: item.key, isCurrent });
+      messageId = await send({ openId: item.openId, card: item.card, uuid: item.key, isCurrent });
       status = messageId ? 'sent' : 'cancelled';
     } catch (failure) {
       status = 'failed';
@@ -111,7 +125,7 @@ export function createReminderDispatcher({ getState, commit, config, send, now =
       if (!config.remindersEnabled) throw new DomainError('飞书提醒尚未启用，请联系组织管理员', 503);
       if (getState().reminders?.deliveries.some(row => row.type === 'test' && row.openId === openId && now() - row.attemptedAt < WINDOW)) throw new DomainError('测试提醒每 5 分钟可发送一次，请稍后重试', 429);
       return deliver({ key: createHash('sha256').update(`${openId}:${now()}`).digest('hex').slice(0, 40), openId, type: 'test',
-        text: `自定义考勤 · 测试提醒\n提醒通道已接通。你可以在“我的提醒”设置提前 15 或 30 分钟收到打卡提醒；管理员可设置查看记录的提醒时间。\n打开考勤：${config.baseUrl}/#checkin` },
+        card: reminderCard('自定义考勤 · 测试提醒','提醒卡片已接通','点击下方按钮，进入你的打卡页。\n提醒时间可在“我的提醒”中调整。','去打卡',`${config.baseUrl}/#checkin`) },
       () => config.adminOpenIds.includes(openId) || getState().employees.some(e => e.openId === openId));
     },
   };

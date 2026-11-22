@@ -306,7 +306,7 @@ function openDrawer(type, item = null, employeeId = '', date = ui.db.today) {
   drawer.showModal();drawer.scrollTop = 0;
   if (type === 'location') {
     const editing = ui.drawer;
-    import('/location-map.mjs').then(module => {if (drawer.open && ui.drawer === editing) editing.cleanup = module.mountLocationMap(document.querySelector('#drawer-form'),getMapPosition);}).catch(() => {if (ui.drawer === editing) document.querySelector('#map-status').textContent = '高德地图加载失败，请关闭面板后重试。';});
+    import('/location-map.mjs').then(module => {if (drawer.open && ui.drawer === editing) editing.cleanup = module.mountLocationMap(document.querySelector('#drawer-form'),getMapPosition,reportLocationTiming);}).catch(() => {if (ui.drawer === editing) document.querySelector('#map-status').textContent = '高德地图加载失败，请关闭面板后重试。';});
   }
 }
 function closeDrawer() {ui.drawer?.cleanup?.();drawer.close();ui.drawer = null;}
@@ -371,11 +371,13 @@ async function deleteTemplate() {
   finally {ui.busy = false;}
 }
 let feishuSdkReady;
+function reportLocationTiming(stage, started, outcome) {
+  if (ui.db.mode === 'feishu') api('/api/location-timing',{stage,durationMs:Math.max(0,Date.now()-started),outcome}).catch(() => {});
+}
 async function prepareFeishuSdk() {
   if (!feishuSdkReady) {
     feishuSdkReady = (async () => {
-      if (!window.h5sdk) {
-        await new Promise((resolve,reject) => {
+      const scriptReady = window.h5sdk ? Promise.resolve() : new Promise((resolve,reject) => {
           const script = document.createElement('script');
           const timeout = setTimeout(() => {script.remove();reject(new Error('飞书定位组件加载超时，请重试'));},15000);
           script.src = 'https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.48.js';
@@ -383,9 +385,8 @@ async function prepareFeishuSdk() {
           script.onerror = () => {clearTimeout(timeout);script.remove();reject(new Error('飞书定位组件加载失败，请检查网络'));};
           document.head.append(script);
         });
-      }
+      const [,config] = await Promise.all([scriptReady,api(`/api/feishu/jsapi-config?url=${encodeURIComponent(location.href.split('#')[0])}`)]);
       if (!window.h5sdk || !window.tt) throw new Error('请在手机飞书工作台中打开应用后定位');
-      const config = await api(`/api/feishu/jsapi-config?url=${encodeURIComponent(location.href.split('#')[0])}`);
       await new Promise((resolve,reject) => {
         let sdkReady = false, authenticated = false;
         const timeout = setTimeout(() => reject(new Error('飞书定位认证超时，请重新打开应用')),15000);
@@ -400,20 +401,26 @@ async function prepareFeishuSdk() {
   }
   return feishuSdkReady;
 }
-async function getPosition() {
+async function requestPosition() {
   if (ui.db.mode === 'feishu') {
     if (!/Lark|Feishu/i.test(navigator.userAgent)) throw new Error('请在手机飞书工作台中打开应用，使用飞书定位');
-    await prepareFeishuSdk();
-    return new Promise((resolve,reject) => {
+    let started = Date.now(), outcome = 'error';
+    try {await prepareFeishuSdk();outcome = 'ok';}
+    finally {reportLocationTiming('prepare',started,outcome);}
+    started = Date.now();outcome = 'error';
+    try {
+      const position = await new Promise((resolve,reject) => {
       const timeout = setTimeout(() => reject(new Error('飞书定位超时，请开启高精度定位并重试')),20000);
       window.tt.getLocation({timeout:15,cacheTimeout:0,accuracy:'best',success:result => {
         clearTimeout(timeout);
         if (!['wgs84','gcj02'].includes(result.type)) return reject(new Error('飞书返回的位置暂不可用，请更新客户端或联系管理员'));
         const position = {latitude:Number(result.latitude),longitude:Number(result.longitude),accuracy:Number(result.horizontalAccuracy ?? result.accuracy),timestamp:Number(result.timestamp),coordinateSystem:result.type};
-        if (![position.latitude,position.longitude,position.accuracy,position.timestamp].every(Number.isFinite) || position.timestamp <= 0) return reject(new Error('飞书定位信息不完整，请重新定位'));
+        if (![position.latitude,position.longitude,position.accuracy,position.timestamp].every(Number.isFinite) || position.timestamp <= 0 || Math.abs(position.latitude) > 90 || Math.abs(position.longitude) > 180 || position.accuracy <= 0) return reject(new Error('飞书定位信息不完整，请重新定位'));
         resolve(position);
       },fail:() => {clearTimeout(timeout);reject(new Error('飞书定位失败，请在手机端允许定位权限并重试'));}});
-    });
+      });
+      outcome = 'ok';return position;
+    } finally {reportLocationTiming('locate',started,outcome);}
   }
   return new Promise((resolve,reject) => {
     if (!navigator.geolocation) return reject(new Error('当前设备不支持定位，请在手机浏览器中打开'));
@@ -421,19 +428,20 @@ async function getPosition() {
   });
 }
 let nearbyPosition, nearbyRequest;
-function getMapPosition({fresh = false} = {}) {
-  if (!fresh && nearbyPosition && Date.now() - nearbyPosition.receivedAt < 60_000) return Promise.resolve(nearbyPosition.position);
+function getPosition({maxAge = 15_000} = {}) {
+  const age = nearbyPosition ? Date.now() - nearbyPosition.timestamp : Infinity;
+  // Reuse only a recent precise fix; the server still checks its timestamp, accuracy and fence.
+  if (age >= 0 && age < maxAge && nearbyPosition.accuracy <= 20) return Promise.resolve(nearbyPosition);
   if (!nearbyRequest) {
     nearbyPosition = null;
-    nearbyRequest = getPosition().then(position => {
-      nearbyPosition = {position, receivedAt:Date.now()};return position;
-    }).finally(() => {nearbyRequest = null;});
+    nearbyRequest = requestPosition().then(position => {nearbyPosition = position;return position;}).finally(() => {nearbyRequest = null;});
   }
   return nearbyRequest;
 }
+function getMapPosition({fresh = false} = {}) {return getPosition({maxAge:fresh ? 0 : 60_000});}
 function warmLocation() {
   if (ui.db.mode === 'feishu' && /Lark|Feishu/i.test(navigator.userAgent) && /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent)) {
-    // Keep this short-lived map hint in memory; punches always request a fresh position.
+    // One foreground request, shared with the map and punch button; no continuous tracking.
     getMapPosition().catch(() => {});
   }
 }

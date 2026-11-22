@@ -182,11 +182,13 @@ export async function getDirectory(options) {
     notice: groupScopes ? '当前显示按部门和成员授权的人员；若缺少成员，请组织管理员将对应部门加入应用通讯录范围。' : '' };
 }
 
-export async function sendReminderMessage({ appId, appSecret, openId, text, uuid, isCurrent = () => true, fetch = globalThis.fetch }) {
-  if (!/^ou_[a-zA-Z0-9]+$/.test(openId) || typeof text !== 'string' || !text || text.length > 4000 || !/^[a-zA-Z0-9-]{1,50}$/.test(uuid)) throw new Error('提醒消息格式不正确');
+export async function sendReminderMessage({ appId, appSecret, openId, card, uuid, isCurrent = () => true, fetch = globalThis.fetch }) {
+  if (!/^ou_[a-zA-Z0-9]+$/.test(openId) || card?.schema !== '2.0' || !Array.isArray(card.body?.elements) || !card.body.elements.length || !/^[a-zA-Z0-9-]{1,50}$/.test(uuid)) throw new Error('提醒消息格式不正确');
+  const content = JSON.stringify(card);
+  if (Buffer.byteLength(content) > 30 * 1024) throw new Error('提醒卡片内容过长');
   const token = await tenantToken({ appId, appSecret, fetch });
   if (!isCurrent()) return null;
-  const options = json({ receive_id: openId, msg_type: 'text', content: JSON.stringify({ text }), uuid });
+  const options = json({ receive_id: openId, msg_type: 'interactive', content, uuid });
   options.headers.Authorization = `Bearer ${token}`;
   const data = await request(fetch, `${openApi}/im/v1/messages?receive_id_type=open_id`, options, '发送飞书提醒');
   if (typeof data.data?.message_id !== 'string' || !data.data.message_id) throw new Error('飞书未返回提醒发送结果');

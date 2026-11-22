@@ -11,6 +11,7 @@ assert.ok(start >= 0 && end > start, 'test the actual SDK preparation and locati
 
 function sdkHarness(userAgent = 'Feishu mobile', autoLocate = true) {
   const callbacks = {};
+  const timings = [];
   const timers = new Map();
   let timerId = 0;
   let locationCalls = 0;
@@ -21,7 +22,7 @@ function sdkHarness(userAgent = 'Feishu mobile', autoLocate = true) {
     ui: { db: { mode: 'feishu' } },
     navigator: { userAgent, geolocation: { getCurrentPosition() { assert.fail('Production must use Feishu location, never browser GPS'); } } },
     location: { href: 'https://attendance.example.com/#checkin' },
-    api: async () => ({ appId: 'cli_test', signature: 'test-signature' }),
+    api: async (path, body) => {if (path === '/api/location-timing') timings.push(body);return { appId: 'cli_test', signature: 'test-signature' };},
     setTimeout: (callback, delay) => { timers.set(++timerId, { callback, delay }); return timerId; },
     clearTimeout: id => timers.delete(id),
     window: {
@@ -40,7 +41,7 @@ function sdkHarness(userAgent = 'Feishu mobile', autoLocate = true) {
     },
   });
   runInContext(app.slice(start, end), context);
-  return { callbacks, timers, context, advance:ms=>{now+=ms;}, warm:()=>context.warmLocation(), mapPosition:options=>context.getMapPosition(options), getPosition: () => context.getPosition(), locationCalls: () => locationCalls, configCalls: () => configCalls };
+  return { callbacks, timers, timings, context, advance:ms=>{now+=ms;}, warm:()=>context.warmLocation(), mapPosition:options=>context.getMapPosition(options), getPosition: () => context.getPosition(), locationCalls: () => locationCalls, configCalls: () => configCalls };
 }
 
 test('Feishu location waits for authentication when SDK ready arrives first', async () => {
@@ -131,20 +132,51 @@ test('Production location rejects an ordinary browser without using browser GPS'
   assert.equal(sdk.configCalls(), 0);
 });
 
-test('Opening the mobile app starts location early, shares the pending map request, and keeps punches fresh', async () => {
+test('Startup, map and punch share one pending location and a precise fix younger than 15 seconds', async () => {
   const sdk = sdkHarness('iPhone Feishu',false);
   sdk.warm();
   await setImmediate();assert.equal(sdk.configCalls(),1);
   sdk.callbacks.ready();sdk.callbacks.config.onSuccess({});await setImmediate();
   assert.equal(sdk.locationCalls(),1);
   const pendingMap=sdk.mapPosition();
-  assert.equal(sdk.locationCalls(),1,'opening a map shares the in-flight startup location');
+  const pendingPunch=sdk.getPosition();
+  assert.equal(sdk.locationCalls(),1,'map and punch share the in-flight startup location');
   sdk.callbacks.location.success({latitude:40,longitude:116,horizontalAccuracy:5,timestamp:1800000000000,type:'wgs84'});
   assert.equal((await pendingMap).latitude,40);
+  assert.equal((await pendingPunch).latitude,40);
   await sdk.mapPosition();assert.equal(sdk.locationCalls(),1,'recent map position is immediate');
-  const punch=sdk.getPosition();await setImmediate();assert.equal(sdk.locationCalls(),2,'punches never reuse the map cache');
+  sdk.advance(14_999);await sdk.getPosition();assert.equal(sdk.locationCalls(),1,'a recent precise fix avoids a duplicate GPS wait');
+  sdk.advance(1);
+  const punch=sdk.getPosition();await setImmediate();assert.equal(sdk.locationCalls(),2,'punch cache expires at 15 seconds');
   sdk.callbacks.location.success({latitude:40.01,longitude:116,horizontalAccuracy:5,timestamp:1800000000001,type:'wgs84'});
   assert.equal((await punch).latitude,40.01);
+});
+
+test('Cached fixes use the device timestamp and are never reused if stale, future-dated or imprecise', async () => {
+  for (const override of [{timestamp:1800000000000-15_000},{timestamp:1800000000000+1000},{horizontalAccuracy:80}]) {
+    const sdk=sdkHarness('iPhone Feishu',false);const first=sdk.mapPosition();await setImmediate();sdk.callbacks.ready();sdk.callbacks.config.onSuccess({});await setImmediate();
+    sdk.callbacks.location.success({latitude:40,longitude:116,horizontalAccuracy:5,timestamp:1800000000000,type:'wgs84',...override});await first;
+    const punch=sdk.getPosition();await setImmediate();assert.equal(sdk.locationCalls(),2);
+    sdk.callbacks.location.success({latitude:40,longitude:116,horizontalAccuracy:5,timestamp:1800000000000,type:'wgs84'});await punch;
+  }
+});
+
+test('Location diagnostics separate preparation and native GPS without coordinates or identity', async () => {
+  const sdk=sdkHarness('iPhone Feishu',false);const pending=sdk.getPosition();await setImmediate();sdk.advance(1200);sdk.callbacks.ready();sdk.callbacks.config.onSuccess({});await setImmediate();sdk.advance(13_000);
+  sdk.callbacks.location.success({latitude:40,longitude:116,horizontalAccuracy:5,timestamp:1800000014200,type:'wgs84'});await pending;
+  assert.deepEqual(JSON.parse(JSON.stringify(sdk.timings)),[{stage:'prepare',durationMs:1200,outcome:'ok'},{stage:'locate',durationMs:13000,outcome:'ok'}]);
+  const failing=sdkHarness('iPhone Feishu',false);const failed=failing.getPosition();const rejected=assert.rejects(failed,/定位失败/);await setImmediate();failing.callbacks.ready();failing.callbacks.config.onSuccess({});await setImmediate();failing.advance(15_000);failing.callbacks.location.fail();await rejected;
+  assert.equal(failing.timings.at(-1).outcome,'error');assert.equal(failing.timings.at(-1).durationMs,15_000);
+});
+
+test('Feishu script and server signature load in parallel; failed telemetry never blocks location', async () => {
+  const sdk=sdkHarness();const h5sdk=sdk.context.window.h5sdk;delete sdk.context.window.h5sdk;
+  let script, signatureStarted=false;
+  sdk.context.document={createElement:()=>({remove(){}}),head:{append:value=>{script=value;}}};
+  sdk.context.api=async path=>{if(path==='/api/location-timing') throw new Error('offline');signatureStarted=true;return {};};
+  const pending=sdk.getPosition();await setImmediate();assert.equal(signatureStarted,true);assert.ok(script);assert.equal(sdk.locationCalls(),0);
+  sdk.context.window.h5sdk=h5sdk;script.onload();await setImmediate();sdk.callbacks.ready();sdk.callbacks.config.onSuccess({});await pending;
+  assert.equal(sdk.locationCalls(),1);
 });
 
 test('Map cache expires, manual refresh reacquires location, and startup failures allow a retry', async () => {

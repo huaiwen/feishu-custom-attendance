@@ -206,6 +206,18 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         requireAuth();
         return json(200, { ...scopedState(), mode: config.mode, timezone: ZONE, today: clockParts().date, now: new Date().toISOString(), session, integration: { configured: config.mode === 'feishu', appId: config.appId || null, mapConfigured: Boolean(config.amapKey && config.amapSecurityCode) } });
       }
+      if (url.pathname === '/api/location-timing' && req.method === 'POST') {
+        requireAuth();
+        const body = await readBody(req);
+        if (Object.keys(body).some(key => !['stage','durationMs','outcome'].includes(key)) ||
+            !['prepare','locate','map-sdk','map-tiles'].includes(body.stage) || !['ok','error'].includes(body.outcome) ||
+            !Number.isInteger(body.durationMs) || body.durationMs < 0 || body.durationMs > 180_000) throw new DomainError('无效的定位耗时');
+        if (!auth.locationTimings || now - auth.locationTimings.since >= 60_000) auth.locationTimings = {since:now,count:0};
+        if (++auth.locationTimings.count > 30) throw new DomainError('定位耗时上报过于频繁', 429);
+        // Timing only: no identity, coordinates, device details or raw SDK errors in logs.
+        console.info('location-timing', JSON.stringify(body));
+        return json(200, {ok:true});
+      }
       if (url.pathname === '/api/reminders' && ['GET', 'PUT'].includes(req.method)) {
         requireAuth();
         const openId = auth.openId || 'demo';

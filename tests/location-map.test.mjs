@@ -38,9 +38,10 @@ function fixture(t, getPosition = async () => ({longitude:123,latitude:45,coordi
   globalThis.window = {AMap:{Map:MockMap,Circle,CircleMarker:Circle,ToolBar:class {},Scale:class {},PlaceSearch:class {search(keyword,callback) { searchCallback = callback; }}}};
   globalThis.document = {createElement:() => new Element()};
   for (const [name,value] of Object.entries(values)) fields.get(name).value = value;
-  const cleanup = mountLocationMap(form,getPosition);
+  const timings = [];
+  const cleanup = mountLocationMap(form,getPosition,(stage,started,outcome) => timings.push({stage,outcome}));
   t.after(() => {cleanup();if(savedWindow === undefined) delete globalThis.window;else globalThis.window=savedWindow;if(savedDocument === undefined)delete globalThis.document;else globalThis.document=savedDocument;});
-  return {form,fields,nodes,cleanup,get map() {return map;},get searchCallback() {return searchCallback;}};
+  return {form,fields,nodes,cleanup,timings,get map() {return map;},get searchCallback() {return searchCallback;}};
 }
 
 test('Existing WGS84 locations retain their physical center without asking for a coordinate system or GPS', async t => {
@@ -60,6 +61,8 @@ test('New locations automatically move nearby once without saving the current po
   assert.equal(calls,1);assert.deepEqual(f.map.center,[123,45]);
   assert.equal(f.fields.get('longitude').value,'');
   assert.match(f.nodes.get('#map-status').textContent,/搜索/);
+  f.map.events.complete();f.map.events.complete();
+  assert.deepEqual(f.timings,[{stage:'map-sdk',outcome:'ok'},{stage:'map-tiles',outcome:'ok'}]);
 });
 
 test('Late automatic location cannot override a user selection; denied location leaves search available', async t => {

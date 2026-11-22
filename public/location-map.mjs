@@ -22,7 +22,7 @@ function loadMap() {
   return sdk;
 }
 
-export function mountLocationMap(form, getPosition) {
+export function mountLocationMap(form, getPosition, reportTiming = () => {}) {
   const field = name => form.elements.namedItem(name);
   const status = form.querySelector('#map-status');
   const results = form.querySelector('#map-results');
@@ -116,23 +116,26 @@ export function mountLocationMap(form, getPosition) {
     }
   };
   const start = async () => {
+    const started = Date.now();let loaded = false;
     for (const control of [searchButton, locateButton, centerButton]) control.disabled = true;
     retryButton.hidden = true;status.textContent = '正在加载高德地图…';
     clearTimeout(readinessTimer);map?.destroy();map = circle = marker = null;
     try {
       const AMap = await loadMap();
+      loaded = true;reportTiming('map-sdk',started,'ok');
       if (!isOpen()) return;
+      const tilesStarted = Date.now();let tilesReported = false;
       map = new AMap.Map(form.querySelector('#location-map'), { viewMode: '2D', center: point() || [105, 35], zoom: point() ? 17 : 4, scrollWheel: false });
       map.addControl(new AMap.ToolBar());map.addControl(new AMap.Scale());
       places = new AMap.PlaceSearch({ pageSize: 5, extensions: 'base', citylimit: false });
       map.on('click', event => select(event.lnglat));
       map.on('dragstart', () => { interaction++; });
-      map.on('complete', () => { clearTimeout(readinessTimer);if (!isOpen()) return;retryButton.hidden = true;if (point()) update(); });
-      readinessTimer = setTimeout(() => { if (isOpen()) { status.textContent = '高德底图尚未加载完成，请检查网络或点击重新加载。';retryButton.hidden = false; } }, 20_000);
+      map.on('complete', () => { clearTimeout(readinessTimer);if (!isOpen()) return;if (!tilesReported) {reportTiming('map-tiles',tilesStarted,'ok');tilesReported = true;}retryButton.hidden = true;if (point()) update(); });
+      readinessTimer = setTimeout(() => { if (isOpen()) { if (!tilesReported) {reportTiming('map-tiles',tilesStarted,'error');tilesReported = true;}status.textContent = '高德底图尚未加载完成，请检查网络或点击重新加载。';retryButton.hidden = false; } }, 20_000);
       for (const control of [searchButton, locateButton, centerButton]) control.disabled = false;
       update();
       if (!point()) locate();
-    } catch (error) { if (isOpen()) { status.textContent = error instanceof TypeError ? '高德地图组件加载失败，请重新加载或联系管理员。' : error.message;retryButton.hidden = false; } }
+    } catch (error) { if (!loaded) reportTiming('map-sdk',started,'error');if (isOpen()) { status.textContent = error instanceof TypeError ? '高德地图组件加载失败，请重新加载或联系管理员。' : error.message;retryButton.hidden = false; } }
   };
   retryButton.onclick = start;
   form.addEventListener('change', change);field('radius').addEventListener('input', update);

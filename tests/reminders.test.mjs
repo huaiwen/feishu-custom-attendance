@@ -34,14 +34,29 @@ test('Review reminders aggregate by group and punch time, follow current manager
   const state = fixture();
   let items = dueReminders(state,config,at('10:00'));
   assert.equal(items.length,1);assert.equal(items[0].openId,'ou_manager');
-  assert.match(items[0].text,/group=g1#records/);
-  assert.doesNotMatch(items[0].text,/ou_a|ou_b/);
+  assert.match(items[0].card.body.elements.at(-1).behaviors[0].default_url,/group=g1#records/);
+  assert.doesNotMatch(JSON.stringify(items[0].card),/ou_a|ou_b/);
   state.groups[0].adminIds=[];
   items = dueReminders(state,config,at('10:00'));
   assert.deepEqual(items.map(x=>x.openId),['ou_org']);
   state.reminders.preferences.ou_org={reviewEnabled:true,afterMinutes:90};
   assert.equal(dueReminders(state,config,at('10:00')).length,0);
   assert.equal(dueReminders(state,config,at('10:30')).length,1);
+});
+
+test('Employee reminders are native cards with shift time, a plain-text location and one direct punch button', () => {
+  const state=fixture();state.locations=[{id:'office',name:'测试楼 <at id=all> & [链接](https://example.org)'}];
+  state.schedules[0].segments[0].locationId='office';
+  const {card}=dueReminders(state,config,at('08:45')).find(item=>item.openId==='ou_a');
+  assert.equal(card.schema,'2.0');assert.equal(card.config.enable_forward,false);
+  assert.equal(card.header.title.content,'上班打卡提醒');assert.match(card.header.subtitle.content,/2040-01-02.*09:00/);
+  const details=card.body.elements[0].columns[0].elements[0].text;
+  assert.equal(details.tag,'plain_text');assert.ok(details.content.includes(state.locations[0].name),'names cannot inject card mentions or links');
+  const button=card.body.elements.at(-1);
+  assert.equal(button.text.content,'去打卡');assert.equal(button.type,'primary_filled');
+  assert.deepEqual(button.behaviors,[{type:'open_url',default_url:'https://attendance.example.com/#checkin'}]);
+  assert.equal(card.body.elements.filter(element=>element.tag==='button').length,1);
+  assert.equal(dueReminders(state,config,at('17:45'))[0].card.header.title.content,'下班打卡提醒');
 });
 
 test('Reminders cross midnight using schedule dates in Beijing time', () => {
@@ -82,6 +97,6 @@ test('Retries stop after three attempts and disabled service never sends; test r
   assert.equal(calls,3);
   assert.doesNotMatch(JSON.stringify(state.reminders),/private-secret/);
   await createReminderDispatcher({...options,config:{...config,remindersEnabled:false}}).run();assert.equal(calls,3);
-  const tester=createReminderDispatcher({...options,send:async item=>{assert.equal(item.openId,'ou_a');assert.match(item.text,/测试提醒/);return 'om_test';}});
+  const tester=createReminderDispatcher({...options,send:async item=>{assert.equal(item.openId,'ou_a');assert.match(item.card.header.title.content,/测试提醒/);assert.equal(item.card.body.elements.at(-1).text.content,'去打卡');return 'om_test';}});
   await tester.test('ou_a');await assert.rejects(tester.test('ou_a'),/5 分钟/);
 });

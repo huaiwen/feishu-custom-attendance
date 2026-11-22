@@ -34,11 +34,11 @@ function json(body) {
 
 export async function exchangeCode({ appId, appSecret, redirectUri, code, fetch = globalThis.fetch }) {
   checkCredentials(appId, appSecret);
-  required(redirectUri, '登录回调地址');
+  if (redirectUri !== undefined) required(redirectUri, '登录回调地址');
   required(code, '飞书登录授权码');
   const token = await request(fetch, `${openApi}/authen/v2/oauth/token`, json({
     grant_type: 'authorization_code', client_id: appId, client_secret: appSecret,
-    code, redirect_uri: redirectUri,
+    code, ...(redirectUri ? {redirect_uri: redirectUri} : {}),
   }), '飞书登录');
   if (typeof token.access_token !== 'string' || !token.access_token) throw new Error('飞书登录响应缺少访问凭证');
   const user = await request(fetch, `${openApi}/authen/v1/user_info`, {

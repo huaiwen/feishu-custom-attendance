@@ -371,20 +371,24 @@ async function deleteTemplate() {
   finally {ui.busy = false;}
 }
 let feishuSdkReady;
+function loadFeishuScript() {
+  return window.h5sdk ? Promise.resolve() : new Promise((resolve,reject) => {
+          const script = document.createElement('script');
+          const timeout = setTimeout(() => {script.remove();reject(new Error('飞书定位组件加载超时，请重试'));},15000);
+          script.src = '/vendor/feishu-h5-sdk-1.5.48.js';
+          script.onload = () => {clearTimeout(timeout);if (!window.h5sdk) {script.remove();reject(new Error("飞书组件未就绪，请从飞书工作台重新打开"));return;}resolve();};
+          script.onerror = () => {clearTimeout(timeout);script.remove();reject(new Error('飞书定位组件加载失败，请检查网络'));};
+          document.head.append(script);
+        });
+}
+
 function reportLocationTiming(stage, started, outcome) {
   if (ui.db.mode === 'feishu') api('/api/location-timing',{stage,durationMs:Math.max(0,Date.now()-started),outcome}).catch(() => {});
 }
 async function prepareFeishuSdk() {
   if (!feishuSdkReady) {
     feishuSdkReady = (async () => {
-      const scriptReady = window.h5sdk ? Promise.resolve() : new Promise((resolve,reject) => {
-          const script = document.createElement('script');
-          const timeout = setTimeout(() => {script.remove();reject(new Error('飞书定位组件加载超时，请重试'));},15000);
-          script.src = 'https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.48.js';
-          script.onload = () => {clearTimeout(timeout);resolve();};
-          script.onerror = () => {clearTimeout(timeout);script.remove();reject(new Error('飞书定位组件加载失败，请检查网络'));};
-          document.head.append(script);
-        });
+      const scriptReady = loadFeishuScript();
       const [,config] = await Promise.all([scriptReady,api(`/api/feishu/jsapi-config?url=${encodeURIComponent(location.href.split('#')[0])}`)]);
       if (!window.h5sdk || !window.tt) throw new Error('请在手机飞书工作台中打开应用后定位');
       await new Promise((resolve,reject) => {
@@ -491,7 +495,7 @@ document.addEventListener('click', async event => {
     case 'edit-template':openDrawer('template',(ui.db.shiftTemplates || []).find(item => item.id === button.dataset.id));break;
     case 'apply-template':applyTemplate();break;
     case 'delete-template':await deleteTemplate();break;
-    case 'logout':try {await api('/auth/logout',{});location.reload();} catch (error) {toast(error.message,true);}break;
+    case 'logout':try {await api('/auth/logout',{});location.href='/?signedOut=1#checkin';} catch (error) {toast(error.message,true);}break;
     case 'previous-week':ui.week = addDays(ui.week,-7);renderSchedules();break;
     case 'next-week':ui.week = addDays(ui.week,7);renderSchedules();break;
     case 'this-week':ui.week = monday(ui.db.today);renderSchedules();break;
@@ -541,8 +545,35 @@ function loginLink() {
   for (const name of ['recordDate','group']) if (query.has(name)) params.set(name,query.get(name));
   return `/auth/login?${params}`;
 }
+let triedNativeLogin=false;
+async function nativeLogin() {
+  const [config]=await Promise.all([api('/api/auth/bootstrap'),loadFeishuScript()]);
+  const code=await new Promise((resolve,reject)=>{
+    const timeout=setTimeout(()=>reject(new Error('飞书免登超时，请点击登录按钮重试')),15000);
+    const success=result=>{clearTimeout(timeout);resolve(result.code);};
+    const fail=error=>{
+      clearTimeout(timeout);
+      const errno=Number(error?.errno), detail=String(error?.errString || error?.errMsg || '').match(/(?:code|错误码)\s*[:：=]\s*(\d+)/i)?.[1];
+      reject(new Error(`飞书自动授权失败${Number.isInteger(errno) ? `（错误码 ${errno}${detail ? ` / ${detail}` : ''}）` : ''}，请重试`));
+    };
+    const legacyLogin=()=>{
+      if (!window.tt?.requestAuthCode) {clearTimeout(timeout);reject(new Error('当前飞书版本不支持免登，请更新飞书或点击登录按钮'));return;}
+      window.tt.requestAuthCode({appId:config.appId,success,fail});
+    };
+    window.h5sdk.ready(()=>{
+      if (!window.tt?.requestAccess) {legacyLogin();return;}
+      window.tt.requestAccess({appID:config.appId,scopeList:[],success,fail:error=>Number(error?.errno)===103 ? legacyLogin() : fail(error)});
+    });
+  });
+  await api('/auth/feishu',{nonce:config.nonce,code});
+}
 async function init() {
   try {await refresh();warmLocation();reminderLinkFilters();const requested = location.hash.slice(1);ui.view = requested || (isAdmin() ? 'overview' : 'checkin');if (isAdmin() && ['schedules','checkin',''].includes(requested) && !ui.db.schedules.some(s => s.date >= ui.db.today)) ui.view = 'overview';render();}
-  catch (error) {main.innerHTML = `<div class="error-page"><h2>${error.status === 401 || error.status === 403 ? '登录自定义考勤' : '暂时无法加载'}</h2><p>${esc(error.message)}</p>${error.status === 401 || error.status === 403 ? `<a class="button primary" href="${esc(loginLink())}">使用飞书身份登录</a>` : '<button class="button primary" data-action="retry">重新加载</button>'}</div>`;}
+  catch (error) {
+    if (error.status===401 && !triedNativeLogin && !new URLSearchParams(location.search).has('signedOut') && /Lark|Feishu/i.test(navigator.userAgent)) {
+      triedNativeLogin=true;main.innerHTML='<div class="loading"><span class="spinner"></span>正在使用飞书身份进入…</div>';
+      try {await nativeLogin();location.reload();return;} catch (loginError) {error.message=loginError.message;}
+    }
+    main.innerHTML = `<div class="error-page"><h2>${error.status === 401 || error.status === 403 ? '登录自定义考勤' : '暂时无法加载'}</h2><p>${esc(error.message)}</p>${error.status === 401 || error.status === 403 ? `<a class="button primary" href="${esc(loginLink())}">使用飞书身份登录</a>` : '<button class="button primary" data-action="retry">重新加载</button>'}</div>`;}
 }
 init();

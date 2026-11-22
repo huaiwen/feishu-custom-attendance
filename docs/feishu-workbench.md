@@ -46,10 +46,13 @@ HOST=0.0.0.0
 
 | 配置项 | 示例值 |
 | --- | --- |
-| 重定向 URL | `https://attendance.example.com/auth/callback` |
+| 重定向 URL（普通浏览器登录） | `https://attendance.example.com/auth/callback` |
+| 重定向 URL（飞书客户端免登） | `https://attendance.example.com/`，保留末尾斜杠 |
 | H5 可信域名 | `https://attendance.example.com`；使用实际 HTTPS 根地址，非标准端口也需包含在地址中 |
 
 回调地址必须与服务端 `BASE_URL` 派生出的地址完全一致；本项目回调路径为 `/auth/callback`，不要照搬其他教程的末尾斜杠。2026-11-21 后台实测，H5 可信域名字段要求完整 HTTP/HTTPS URL，裸 `主机:端口` 无法保存；使用与 `BASE_URL` 相同的 HTTPS 根地址并回读确认。部署在根路径，避免前缀路径或代理改写导致 OAuth 回调、静态资源和 JSAPI 验签不一致。[重定向 URL 配置](https://open.feishu.cn/document/develop-web-apps/configure-redirect-urls)、[OAuth 授权码与回调规则](https://open.feishu.cn/document/common-capabilities/sso/api/obtain-oauth-code)、[H5 JSAPI 鉴权规则](https://open.feishu.cn/document/uYjL24iN/uEzM4YjLxMDO24SMzgjN)
+
+免登使用 `tt.requestAccess({appID,scopeList:[]})`；飞书会校验当前网页地址，因此只添加 `/auth/callback` 不够，缺少首页时会出现 `2700002 / 20029`。旧客户端仅在接口缺失或返回 `errno=103` 时使用 `tt.requestAuthCode({appId})`。用户拒绝或其他失败不会触发降级。服务端使用同源、HttpOnly Cookie 和一次性 nonce 校验，授权码通过 POST 交换，不放进链接或日志。[官方免登兼容示例](https://open.feishu.cn/document/client-docs/h5/development-guide/step-3)、[SDK 常见问题](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/server-side-sdk/faq)
 
 ## 4. 权限最小集
 
@@ -107,6 +110,8 @@ HOST=0.0.0.0
 - JSAPI 票据：`POST https://open.feishu.cn/open-apis/jssdk/ticket/get`，读取 `data.ticket` 与 `data.expire_in`；服务端缓存并在过期前刷新。[文档](https://open.feishu.cn/document/ukTMukTMukTM/uYTM5UjL2ETO14iNxkTN/h5_js_sdk/authorization)
 - JSSDK：`https://lf-scm-cn.feishucdn.com/lark/op/h5-js-sdk-1.5.48.js`。[官方 SDK 引入说明](https://open.feishu.cn/document/client-docs/h5/introduction)
 
+当前内置该固定版本的 JSSDK，仅将两处获取全局对象的 `new Function("return this;")()` 改为 `globalThis`，避免未登录页面因 CSP 禁止动态执行而加载失败。修改和文件哈希见 `public/vendor/FEISHU-SDK-NOTICE.md`；这没有放宽登录页、普通用户或组管理员的 CSP。
+
 已登录的前端通过 `GET /api/feishu/jsapi-config?url=...` 获取 JSAPI 配置，`url` 使用 `encodeURIComponent(location.href.split('#')[0])`。服务端仅为 `BASE_URL` 同源页面签名。前端把配置交给 `h5sdk.config`，同时等待 `h5sdk.ready` 和 `config.onSuccess` 后才调用 `tt.getLocation({ timeout: 15, cacheTimeout: 0, accuracy: 'best', success, fail })`；鉴权失败或超时会停止定位并允许重试。前端保留实际返回的坐标系 `type`，后端仅接受 `wgs84` 或 `gcj02`，按实际坐标系转换后计算距离，不允许缺失或误标。新增地点的地图选点默认保存 GCJ-02，旧地点保持原坐标系。
 
 本地测试覆盖 API 请求字段、错误脱敏、凭证过期、并发刷新与签名计算；它不等于真实飞书租户、真实手机或现场定位验收。
@@ -126,3 +131,7 @@ HOST=0.0.0.0
 成员转组不改写历史排班和打卡归属。初始组织管理员由 `ADMIN_OPEN_IDS` 保留；其他角色由组织管理员在成员考勤设置中指定，组管理员也可在考勤组设置中指定。
 
 接口依据：[通讯录授权范围](https://open.feishu.cn/document/server-docs/contact-v3/scope/list)、[部门直属成员](https://open.feishu.cn/document/server-docs/contact-v3/user/find_by_department)、[批量用户](https://open.feishu.cn/document/server-docs/contact-v3/user/batch)、[子部门列表](https://open.feishu.cn/document/server-docs/contact-v3/department/children)。
+
+## 飞书内免登（0.4.4）
+
+工作台和卡片打开后自动调用官方 requestAccess，服务端换取身份并创建本应用会话。自动登录保留当前页面；SDK不支持、用户取消或失败时保留手动登录入口。退出只退出本应用，并暂停当前页面自动登录。授权码、token和Secret不进入浏览器存储或日志。

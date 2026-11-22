@@ -163,6 +163,34 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       const scopedState = () => visibleState(state, currentSession(), config.adminOpenIds);
       if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== origin) throw new DomainError('请求来源校验失败，请从应用页面重试', 403);
 
+      const loginIdentity = identity => {
+        if (config.tenantKey && identity.tenantKey !== config.tenantKey) throw new DomainError('此账号不属于配置的企业',403);
+        const employee=state.employees.find(e=>e.openId===identity.openId);
+        if (employee?.disabled || !employee && !config.adminOpenIds.includes(identity.openId)) throw new DomainError('尚未加入考勤或账号已停用，请联系组织管理员',403);
+        const id=randomBytes(32).toString('hex');
+        sessions.set(id,{openId:identity.openId,expires:now+SESSION_MS});
+        setCookie('attendance_session',id,SESSION_MS/1000);
+      };
+      if (url.pathname==='/api/auth/bootstrap' && req.method==='GET') {
+        if (config.mode!=='feishu') throw new DomainError('本地演示无需登录');
+        if (oauthStates.size>=1000) throw new DomainError('登录请求过多，请稍后重试',429);
+        const nonce=randomBytes(32).toString('hex');
+        oauthStates.set(nonce,{expires:now+300000,type:'sso'});
+        setCookie('attendance_sso',nonce,300);
+        return json(200,{appId:config.appId,nonce});
+      }
+      if (url.pathname==='/auth/feishu' && req.method==='POST') {
+        const input=await readBody(req);
+        if (config.mode!=='feishu' || typeof input.nonce!=='string' || cookie(req,'attendance_sso')!==input.nonce || oauthStates.get(input.nonce)?.type!=='sso') throw new DomainError('登录验证已失效，请重新打开应用',403);
+        oauthStates.delete(input.nonce);
+        if (typeof input.code!=='string' || !input.code || input.code.length>2048) throw new DomainError('未获得飞书登录授权码');
+        let identity;
+        try {identity=await exchangeCode({appId:config.appId,appSecret:config.appSecret,code:input.code});}
+        catch {throw new DomainError('飞书免登未完成，请使用页面上的登录入口重试',502);}
+        loginIdentity(identity);
+        return json(200,{ok:true});
+      }
+
       if (url.pathname === '/auth/login' && req.method === 'GET') {
         if (config.mode === 'demo') return redirect('/');
         if (oauthStates.size >= 1000) throw new DomainError('登录请求过多，请稍后重试', 429);
@@ -182,7 +210,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       if (url.pathname === '/auth/callback' && req.method === 'GET') {
         if (config.mode !== 'feishu') throw new DomainError('尚未配置飞书登录');
         const nonce = url.searchParams.get('state');
-        if (!nonce || cookie(req, 'attendance_oauth') !== nonce || !oauthStates.has(nonce)) throw new DomainError('登录验证已失效，请重新登录', 403);
+        if (!nonce || cookie(req, 'attendance_oauth') !== nonce || !oauthStates.has(nonce) || oauthStates.get(nonce).type==='sso') throw new DomainError('登录验证已失效，请重新登录', 403);
         const { returnTo } = oauthStates.get(nonce);
         oauthStates.delete(nonce);
         const code = url.searchParams.get('code');
@@ -190,11 +218,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         let identity;
         try { identity = await exchangeCode({ appId: config.appId, appSecret: config.appSecret, redirectUri: `${config.baseUrl}/auth/callback`, code }); }
         catch { throw new DomainError('飞书登录失败，请检查应用配置、回调地址或重新授权', 502); }
-        if (config.tenantKey && identity.tenantKey !== config.tenantKey) throw new DomainError('此账号不属于配置的企业', 403);
-        if (!config.adminOpenIds.includes(identity.openId) && !state.employees.some(e => e.openId === identity.openId)) throw new DomainError('尚未加入考勤，请联系管理员从飞书组织中添加你', 403);
-        const id = randomBytes(32).toString('hex');
-        sessions.set(id, { openId: identity.openId, expires: now + SESSION_MS });
-        setCookie('attendance_session', id, SESSION_MS / 1000);
+        loginIdentity(identity);
         return redirect(returnTo);
       }
       if (url.pathname === '/auth/logout' && req.method === 'POST') {
@@ -447,7 +471,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       }
       if (url.pathname.startsWith('/api/')) throw new DomainError('接口不存在', 404);
       const files = { '/': ['index.html', 'text/html'], '/index.html': ['index.html', 'text/html'], '/app.js': ['app.js', 'text/javascript'], '/styles.css': ['styles.css', 'text/css'] };
-      for (const path of ['location-map.mjs', 'vendor/gcoord.mjs']) files[`/${path}`] = [path, 'text/javascript'];
+      for (const path of ['location-map.mjs', 'vendor/gcoord.mjs', 'vendor/feishu-h5-sdk-1.5.48.js']) files[`/${path}`] = [path, 'text/javascript'];
       const asset = files[url.pathname];
       if (!asset || !['GET', 'HEAD'].includes(req.method)) throw new DomainError('页面不存在', 404);
       // AMap dynamically compiles its plugins; keep this exception off employee and signed-out pages.

@@ -3,7 +3,14 @@ import assert from 'node:assert/strict';
 import { dueReminders, createReminderDispatcher, initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, reminderPunch, dailyAttendance, punchReminder } from '../reminders.mjs';
 import { visibleState, sessionFor } from '../access.mjs';
 
-const config = { baseUrl: 'https://attendance.example.com', adminOpenIds: ['ou_org'], remindersEnabled: true };
+const config = { baseUrl: 'https://attendance.example.com', appId:'cli_test', adminOpenIds: ['ou_org'], remindersEnabled: true };
+function assertInApp(card, target) {
+  const action=card.body.elements.at(-1).behaviors[0], link=new URL(action.pc_url);
+  assert.equal(action.type,'open_url');assert.equal(action.default_url,target);
+  assert.equal(link.origin,'https://applink.feishu.cn');assert.equal(link.pathname,'/client/web_app/open');
+  assert.equal(link.searchParams.get('appId'),config.appId);assert.equal(link.searchParams.get('mode'),'appCenter');
+  assert.equal(link.searchParams.get('reload'),'true');assert.equal(link.searchParams.get('lk_target_url'),target);
+}
 const at = time => Date.parse(`2040-01-02T${time}:00+08:00`);
 function fixture() {
   const state = { version: 2, employees: [{ id:'a',openId:'ou_a',groupId:'g1' },{ id:'b',openId:'ou_b',groupId:'g1' },{id:'m',openId:'ou_manager',groupId:'g2'}],
@@ -35,6 +42,7 @@ test('Review reminders aggregate by group and punch time, follow current manager
   let items = dueReminders(state,config,at('10:00'));
   assert.equal(items.length,1);assert.equal(items[0].openId,'ou_manager');
   assert.match(items[0].card.body.elements.at(-1).behaviors[0].default_url,/group=g1#records/);
+  assertInApp(items[0].card,`${config.baseUrl}/?recordDate=2040-01-02&group=g1#records`);
   assert.doesNotMatch(JSON.stringify(items[0].card),/ou_a|ou_b/);
   state.groups[0].adminIds=[];
   items = dueReminders(state,config,at('10:00'));
@@ -55,7 +63,7 @@ test('Employee reminders are native cards with shift time, a plain-text location
   assert.equal(details.tag,'plain_text');assert.ok(details.content.includes(state.locations[0].name),'names cannot inject card mentions or links');
   const button=card.body.elements.at(-1);
   assert.equal(button.text.content,'去打卡');assert.equal(button.type,'primary_filled');
-  assert.deepEqual(button.behaviors,[{type:'open_url',default_url:`https://attendance.example.com/#punch=${key}`}]);
+  assertInApp(card,`${config.baseUrl}/#punch=${key}`);
   assert.equal(card.config.update_multi,true);
   assert.equal(card.body.elements.filter(element=>element.tag==='button').length,1);
   assert.equal(dueReminders(state,config,at('17:45'))[0].card.header.title.content,'下班打卡提醒');
@@ -77,6 +85,7 @@ test('Completed punches update only the original card; a failed update retries a
   let state=fixture(),now=at('08:45'),updates=0;state.schedules.splice(1);
   const options={getState:()=>state,config,now:()=>now,commit:fn=>{state=structuredClone(state);fn(state);},send:async()=> 'om_original',update:async({messageId,card})=>{
     updates++;assert.equal(messageId,'om_original');assert.equal(card.header.title.content,'打卡成功');assert.equal(card.config.update_multi,true);
+    assertInApp(card,`${config.baseUrl}/?recordDate=2040-01-02#records`);
     assert.doesNotMatch(JSON.stringify(card),/longitude|latitude|ou_a|#punch=/);
     if(updates===1)throw new Error('network-private');
   }};
@@ -126,7 +135,7 @@ test('Retries stop after three attempts and disabled service never sends; test r
   assert.equal(calls,3);
   assert.doesNotMatch(JSON.stringify(state.reminders),/private-secret/);
   await createReminderDispatcher({...options,config:{...config,remindersEnabled:false}}).run();assert.equal(calls,3);
-  const tester=createReminderDispatcher({...options,send:async item=>{assert.equal(item.openId,'ou_a');assert.match(item.card.header.title.content,/测试提醒/);assert.equal(item.card.body.elements.at(-1).text.content,'查看今日打卡');return 'om_test';}});
+  const tester=createReminderDispatcher({...options,send:async item=>{assert.equal(item.openId,'ou_a');assert.match(item.card.header.title.content,/测试提醒/);assert.equal(item.card.body.elements.at(-1).text.content,'查看今日打卡');assertInApp(item.card,`${config.baseUrl}/#checkin`);return 'om_test';}});
   await tester.test('ou_a');await assert.rejects(tester.test('ou_a'),/5 分钟/);
 });
 

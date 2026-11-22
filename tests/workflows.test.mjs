@@ -77,11 +77,18 @@ test('A forged callback or late APPROVED event cannot override the current nativ
   assert.equal(f.service.cardAction({event_id:'card',operator:{open_id:'ou_self'},action:{value:{action:'sync_calendar',instanceId:'instance1'}}}).toast.type,'success');
   f.event('APPROVED','late');await f.service.run();
   assert.equal(f.calls.creates.length,0);assert.equal(f.state.workflows.requests[0].status,'REJECTED');
+  await f.service.run();
+  const action=f.calls.messages.at(-1).card.body.elements[1].behaviors[0];
+  assert.equal(action.default_url,`${f.config.baseUrl}/?request=instance1#requests`);
+  const link=new URL(action.pc_url);assert.equal(link.hostname,'applink.feishu.cn');
+  assert.equal(link.searchParams.get('appId'),f.config.appId);assert.equal(link.searchParams.get('lk_target_url'),action.default_url);
   f.service.acceptApproval({tenant_key:'evil',approval_code:'leave-code',instance_code:'instance2'});assert.equal(f.state.workflows.jobs.some(j=>j.instanceId==='instance2'),false);
 });
 
 test('Overtime needs a real current position during the approved interval, including accuracy at the fence',async()=>{
-  const f=fixture();f.native.approval_code='work-code';f.event();await f.service.run();
+  const f=fixture();f.native.approval_code='work-code';f.event();await f.service.run();await f.service.run();
+  const action=f.calls.messages[0].card.body.elements[1].behaviors[0];
+  assert.equal(new URL(action.pc_url).searchParams.get('lk_target_url'),`${f.config.baseUrl}/?request=instance1#requests`);
   await assert.rejects(f.service.requestCalendar('instance1','ou_self',{}),/加班时段/);
   await assert.rejects(f.service.requestCalendar('instance1','ou_self',{...f.position(),latitude:41}),/有效打卡范围/);
   await assert.rejects(f.service.requestCalendar('instance1','ou_self',{...f.position(),accuracy:120}),/精度不足/);
@@ -100,6 +107,9 @@ test('One bad form is visible but cannot produce a calendar; contact departure r
   assert.equal(sessionFor(f.state,'ou_self',[]),null);await f.service.run();
   await assert.rejects(f.service.requestCalendar('instance1','ou_self'),/本人/);
   assert.equal(f.calls.messages.filter(m=>m.openId==='ou_admin').length,1);
+  const action=f.calls.messages.find(m=>m.openId==='ou_admin').card.body.elements[1].behaviors[0];
+  assert.equal(action.default_url,`${f.config.baseUrl}/#employees`);
+  assert.equal(new URL(action.pc_url).searchParams.get('lk_target_url'),action.default_url);
 });
 
 test('Personal, group and organization views hide private queues and restrict request exports',async()=>{

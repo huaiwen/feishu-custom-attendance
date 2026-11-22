@@ -194,7 +194,7 @@ export function createWorkflows({getState,commit,config,api,now = Date.now}) {
     const r=getState().workflows.requests.find(r=>r.id===job.requestId);
     if (!r || !active(getState(),r.openId) || r.notifiedVersion === job.version || hash([r.status,r.ranges,r.error]) !== job.version) return;
     const approved=r.status==='APPROVED' && !r.error;
-    const card=reminderCard(`${workflowLabels[r.kind]}${approvalStatuses[r.status]}`,r.ranges.length ? r.ranges[0].start.slice(0,10) : '审批状态更新',
+    const card=reminderCard(config,`${workflowLabels[r.kind]}${approvalStatuses[r.status]}`,r.ranges.length ? r.ranges[0].start.slice(0,10) : '审批状态更新',
       approved ? r.kind==='leave' ? '审批已通过。点击下方按钮，将请假安排加入自己的飞书日历。' : '审批已通过。到达加班地点后，打开申请完成位置核验并加入日历。' : r.error || '请在飞书原生审批中查看详情。',
       approved ? r.kind==='leave' ? '加入我的日历' : '核验加班地点' : '查看申请',`${config.baseUrl}/?request=${encodeURIComponent(r.id)}#requests`);
     if (approved && r.kind==='leave') card.body.elements[1].behaviors=[{type:'callback',value:{action:'sync_calendar',instanceId:r.id}}];
@@ -259,7 +259,7 @@ export function createWorkflows({getState,commit,config,api,now = Date.now}) {
             if (job.change!=='updated') {
               const name=user?.name || getState().employees.find(e=>e.openId===job.openId)?.name || '一位组织成员';
               for (const openId of [...new Set([...config.adminOpenIds,...getState().employees.filter(e=>e.orgAdmin && !e.disabled).map(e=>e.openId)])].filter(Boolean)) {
-                await api.send({openId,uuid:hash([job.id,openId]),card:reminderCard('组织成员变动',job.change==='deleted' ? '成员已离职' : '新成员已加入',`${name}的组织状态已更新，请核对考勤成员与排班。`,'查看成员',`${config.baseUrl}/#employees`)});
+                await api.send({openId,uuid:hash([job.id,openId]),card:reminderCard(config,'组织成员变动',job.change==='deleted' ? '成员已离职' : '新成员已加入',`${name}的组织状态已更新，请核对考勤成员与排班。`,'查看成员',`${config.baseUrl}/#employees`)});
               }
             }
           }

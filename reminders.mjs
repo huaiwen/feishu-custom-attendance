@@ -31,12 +31,17 @@ export function reminderHistory(state, openId) {
     .map(({ type, attemptedAt, sentAt, status, error }) => ({ type, attemptedAt, sentAt, status, error }));
 }
 
-export function reminderCard(title, subtitle, details, button, url) {
+function cardLink(config, url) {
+  return {type:'open_url',default_url:url,
+    pc_url:`https://applink.feishu.cn/client/web_app/open?${new URLSearchParams({appId:config.appId,mode:'appCenter',reload:'true',lk_target_url:url})}`};
+}
+
+export function reminderCard(config, title, subtitle, details, button, url) {
   return { schema:'2.0', config:{width_mode:'compact',enable_forward:false,update_multi:true,summary:{content:`${title} · ${subtitle}`}},
     header:{title:{tag:'plain_text',content:title},subtitle:{tag:'plain_text',content:subtitle},template:'blue'},
     body:{direction:'vertical',padding:'12px',vertical_spacing:'12px',elements:[
       {tag:'div',text:{tag:'plain_text',content:details}},
-      {tag:'button',text:{tag:'plain_text',content:button},type:'primary_filled',width:'fill',size:'large',behaviors:[{type:'open_url',default_url:url}]},
+      {tag:'button',text:{tag:'plain_text',content:button},type:'primary_filled',width:'fill',size:'large',behaviors:[cardLink(config,url)]},
     ]},
   };
 }
@@ -78,7 +83,7 @@ function attendanceCard(state, config, {employeeId,date,target,record,now,test=f
     body:{direction:'vertical',padding:'12px',vertical_spacing:'12px',elements:[
       ...details,
       ...(canPunch?[text(target.kind==='out'?'点击即定位并提交，提前下班会记为早退。':'点击即通过飞书定位并提交打卡。','notation','grey')]:[]),
-      {tag:'button',text:{tag:'plain_text',content:canPunch?'去打卡':record?'查看我的记录':'查看今日打卡'},type:'primary_filled',width:'fill',size:'large',behaviors:[{type:'open_url',default_url:canPunch?`${config.baseUrl}/#punch=${target.key}`:record?`${config.baseUrl}/?recordDate=${date}#records`:`${config.baseUrl}/#checkin`}]},
+      {tag:'button',text:{tag:'plain_text',content:canPunch?'去打卡':record?'查看我的记录':'查看今日打卡'},type:'primary_filled',width:'fill',size:'large',behaviors:[cardLink(config,canPunch?`${config.baseUrl}/#punch=${target.key}`:record?`${config.baseUrl}/?recordDate=${date}#records`:`${config.baseUrl}/#checkin`)]},
     ]},
   };
 }
@@ -117,7 +122,7 @@ export function dueReminders(state, config, now) {
     if (type==='checkin') {
       candidates.set(key,punchReminder(state,config,{key,openId,schedule,segmentIndex:schedule.segments.indexOf(segment),kind,dueAt,now}));return;
     }
-    const card = reminderCard('考勤记录待查看',`${schedule.date} · ${time} ${label}`,
+    const card = reminderCard(config,'考勤记录待查看',`${schedule.date} · ${time} ${label}`,
         `考勤组：${state.groups.find(g => g.id === schedule.groupId)?.name || '考勤组'}\n请查看本次打卡记录与异常情况。`,'查看记录',`${config.baseUrl}/?recordDate=${schedule.date}&group=${encodeURIComponent(schedule.groupId)}#records`);
     candidates.set(key, { key, openId, type, dueAt, card });
   };

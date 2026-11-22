@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { dueReminders, createReminderDispatcher, initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, reminderPunch } from '../reminders.mjs';
+import { dueReminders, createReminderDispatcher, initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, reminderPunch, dailyAttendance, punchReminder } from '../reminders.mjs';
 import { visibleState, sessionFor } from '../access.mjs';
 
 const config = { baseUrl: 'https://attendance.example.com', adminOpenIds: ['ou_org'], remindersEnabled: true };
@@ -49,8 +49,9 @@ test('Employee reminders are native cards with shift time, a plain-text location
   state.schedules[0].segments[0].locationId='office';
   const {card,key}=dueReminders(state,config,at('08:45')).find(item=>item.openId==='ou_a');
   assert.equal(card.schema,'2.0');assert.equal(card.config.enable_forward,false);
-  assert.equal(card.header.title.content,'上班打卡提醒');assert.match(card.header.subtitle.content,/2040-01-02.*09:00/);
-  const details=card.body.elements[0].columns[0].elements[0].text;
+  assert.equal(card.header.title.content,'上班打卡提醒');assert.equal(card.header.subtitle.content,'2040-01-02');
+  assert.equal(card.body.elements[0].columns[0].elements[1].text.content,'09:00');
+  const details=card.body.elements[0].columns[0].elements[2].text;
   assert.equal(details.tag,'plain_text');assert.ok(details.content.includes(state.locations[0].name),'names cannot inject card mentions or links');
   const button=card.body.elements.at(-1);
   assert.equal(button.text.content,'去打卡');assert.equal(button.type,'primary_filled');
@@ -125,6 +126,52 @@ test('Retries stop after three attempts and disabled service never sends; test r
   assert.equal(calls,3);
   assert.doesNotMatch(JSON.stringify(state.reminders),/private-secret/);
   await createReminderDispatcher({...options,config:{...config,remindersEnabled:false}}).run();assert.equal(calls,3);
-  const tester=createReminderDispatcher({...options,send:async item=>{assert.equal(item.openId,'ou_a');assert.match(item.card.header.title.content,/测试提醒/);assert.equal(item.card.body.elements.at(-1).text.content,'去打卡');return 'om_test';}});
+  const tester=createReminderDispatcher({...options,send:async item=>{assert.equal(item.openId,'ou_a');assert.match(item.card.header.title.content,/测试提醒/);assert.equal(item.card.body.elements.at(-1).text.content,'查看今日打卡');return 'om_test';}});
   await tester.test('ou_a');await assert.rejects(tester.test('ou_a'),/5 分钟/);
+});
+
+test('Daily cards count individual punches, list every remaining site and isolate the employee and date',()=>{
+  const state=fixture();state.locations=[{id:'east',name:'东楼'},{id:'west',name:'西楼'}];
+  state.schedules[0].segments=[{start:'09:00',end:'12:00',locationId:'east'},{start:'14:00',end:'18:00',locationId:'west'}];
+  state.schedules.push({...state.schedules[0],id:'tomorrow',date:'2040-01-03'});
+  state.records.push({employeeId:'a',scheduleId:'a',segmentIndex:0,kind:'in'});
+  const day=dailyAttendance(state,'a','2040-01-02',at('11:45'));
+  assert.equal(day.total,4);assert.equal(day.completed,1);assert.equal(day.remaining.length,3);
+  assert.deepEqual(day.remaining.map(p=>[p.time,p.kind,p.locationName]),[['12:00','out','东楼'],['14:00','in','西楼'],['18:00','out','西楼']]);
+  const card=dueReminders(state,config,at('11:45')).find(r=>r.openId==='ou_a').card;
+  assert.match(card.config.summary.content,/今日还剩 3 次打卡/);
+  assert.doesNotMatch(JSON.stringify(card),/ou_b|2040-01-03|longitude|latitude/);
+  const night=punchReminder(state,config,{key:'a'.repeat(40),openId:'ou_a',schedule:state.schedules.at(-1),segmentIndex:0,kind:'in',dueAt:at('23:59')}).card;
+  assert.match(night.config.summary.content,/2040-01-03还剩 4 次/);assert.doesNotMatch(night.config.summary.content,/今日/);
+});
+
+test('Daily card expiry follows minute boundaries and midnight without concealing missed punches',()=>{
+  const state=fixture();state.schedules[0].segments=[{start:'09:00',end:'12:00'}];
+  assert.deepEqual(dailyAttendance(state,'a','2040-01-02',at('12:00')).remaining.map(p=>p.expired),[true,false]);
+  assert.equal(dailyAttendance(state,'a','2040-01-02',at('14:00')+59000).remaining[1].expired,false);
+  assert.equal(dailyAttendance(state,'a','2040-01-02',at('14:01')).remaining[1].expired,true);
+  state.schedules[0].segments[0].end='23:59';
+  assert.equal(dailyAttendance(state,'a','2040-01-02',Date.parse('2040-01-03T00:00:00+08:00')).remaining[1].expired,true);
+});
+
+test('Original success cards refresh remaining counts after later punches and remain quiet when unchanged',async()=>{
+  const state=fixture();state.schedules.splice(1);const cards=[];
+  const worker=createReminderDispatcher({getState:()=>state,commit:fn=>fn(state),config,now:()=>at('09:00'),send:async()=> 'om_original',update:async({card})=>cards.push(card)});
+  const reminder=punchReminder(state,config,{key:'b'.repeat(40),openId:'ou_a',schedule:state.schedules[0],segmentIndex:0,kind:'in',dueAt:at('08:45')});
+  state.reminders.deliveries.push({...reminder,status:'sent',messageId:'om_original',sentAt:at('08:45')});
+  const record={id:'in',employeeId:'a',scheduleId:'a',segmentIndex:0,kind:'in',date:'2040-01-02',timestamp:new Date(at('09:00')).toISOString(),locationName:'东楼',status:'normal'};
+  state.records.push(record);await worker.syncCompleted();
+  assert.match(cards.at(-1).config.summary.content,/今日还剩 1 次/);
+  state.records.push({...record,id:'out',kind:'out'});await worker.syncCompleted();
+  assert.equal(cards.length,2);assert.match(cards.at(-1).config.summary.content,/今日打卡已全部完成/);
+  assert.doesNotMatch(JSON.stringify(cards.at(-1)),/#punch=/);
+  await worker.syncCompleted();assert.equal(cards.length,2);
+});
+
+test('The largest supported daily checklist fits the native card payload limit with long Chinese names',()=>{
+  const state=fixture();state.locations=[{id:'site',name:'楼'.repeat(80)}];
+  state.schedules[0].segments=Array.from({length:12},(_,i)=>({start:`${String(i*2).padStart(2,'0')}:00`,end:`${String(i*2+1).padStart(2,'0')}:00`,locationId:'site'}));
+  const {card}=punchReminder(state,config,{key:'c'.repeat(40),openId:'ou_a',schedule:state.schedules[0],segmentIndex:0,kind:'in',dueAt:at('00:00')});
+  assert.match(card.config.summary.content,/24 次/);
+  assert.ok(Buffer.byteLength(JSON.stringify(card))<=30000);
 });

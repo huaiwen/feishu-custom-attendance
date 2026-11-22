@@ -4,11 +4,11 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { DomainError, validateEmployee, validateLocation, validateScheduleBatch, evaluatePunch, clockParts } from './domain.mjs';
-import { exchangeCode, getJsapiConfig, getDirectory, sendReminderMessage, updateReminderCard } from './feishu.mjs';
+import { exchangeCode, exchangeBlockCode, getJsapiConfig, getDirectory, sendReminderMessage, updateReminderCard } from './feishu.mjs';
 import { validateShiftTemplate, attendanceSummary } from './schedule-tools.mjs';
 import { sessionFor, managesGroup, requireGroup, visibleState, validateGroup, migrateGroups } from './access.mjs';
 
-import { initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, createReminderDispatcher, reminderPunch } from './reminders.mjs';
+import { initializeReminders, reminderPreferences, validateReminderPreferences, reminderHistory, createReminderDispatcher, reminderPunch, dailyAttendance } from './reminders.mjs';
 import { workflowConfiguration, initializeWorkflows, createWorkflows, approvalArchive } from './workflows.mjs';
 import { createFeishuWorkflowApi, startFeishuEvents } from './feishu-workflows.mjs';
 
@@ -39,8 +39,13 @@ export function configuration(env = process.env) {
   if (env.REMINDERS_ENABLED === 'true' && !enabled) throw new Error('飞书提醒需要先配置飞书应用');
   const workflows=workflowConfiguration(env);
   if (workflows.enabled && !enabled) throw new Error('审批联动需要先配置飞书应用');
+  const widgetOrigin = env.FEISHU_WIDGET_ORIGIN?.trim() || '';
+  if (widgetOrigin) {
+    const url = new URL(widgetOrigin);
+    if (!enabled || url.protocol !== 'https:' || url.origin !== widgetOrigin || !url.hostname.endsWith('.feishu.cn')) throw new Error('工作台小组件需要飞书应用和完整 HTTPS 飞书企业域名');
+  }
   return { workflows, remindersEnabled: env.REMINDERS_ENABLED === 'true', mode: enabled ? 'feishu' : 'demo', host: enabled ? (env.HOST || '127.0.0.1') : '127.0.0.1', port, baseUrl,
-    appId: env.FEISHU_APP_ID, appSecret: env.FEISHU_APP_SECRET, adminOpenIds, tenantKey: env.FEISHU_TENANT_KEY, amapKey, amapSecurityCode };
+    appId: env.FEISHU_APP_ID, appSecret: env.FEISHU_APP_SECRET, adminOpenIds, tenantKey: env.FEISHU_TENANT_KEY, amapKey, amapSecurityCode, widgetOrigin };
 }
 
 function initialState(mode) {
@@ -131,6 +136,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
   initializeWorkflows(state);
   const sessions = new Map();
   const oauthStates = new Map();
+  let widgetRequests = 0;
   const commit = mutate => {
     const next = structuredClone(state);
     const result = mutate(next);
@@ -169,6 +175,33 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
       const requireAdmin = () => { requireAuth(); if (currentSession().role !== 'org_admin') throw new DomainError('此操作需要组织管理员权限', 403); };
       const requireManager = () => { requireAuth(); if (currentSession().role === 'user') throw new DomainError('此操作需要考勤组管理员权限', 403); };
       const scopedState = () => visibleState(state, currentSession(), config.adminOpenIds);
+      if (url.pathname === '/api/widget/today') {
+        if (!config.widgetOrigin) throw new DomainError('工作台小组件尚未启用', 404);
+        // 原生容器可能不发送 Origin；身份只能来自飞书一次性授权码，不使用网页 Cookie。
+        if (req.headers.origin && req.headers.origin !== config.widgetOrigin) throw new DomainError('工作台请求来源不正确', 403);
+        if (req.headers.origin) { res.setHeader('Access-Control-Allow-Origin', config.widgetOrigin); res.setHeader('Vary', 'Origin'); }
+        if (req.method === 'OPTIONS') {
+          res.setHeader('Access-Control-Allow-Methods', 'POST');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+          res.writeHead(204); return res.end();
+        }
+        if (req.method !== 'POST') throw new DomainError('请从工作台打开组件', 405);
+        const input = await readBody(req);
+        if (Object.keys(input).length !== 1 || typeof input.code !== 'string' || !input.code.trim() || input.code.length > 2048) throw new DomainError('工作台登录验证已失效，请刷新');
+        if (widgetRequests >= 16) throw new DomainError('请求较多，请稍后刷新', 429);
+        let identity;
+        widgetRequests++;
+        try { identity = await exchangeBlockCode({ appId: config.appId, appSecret: config.appSecret, code: input.code }); }
+        catch { throw new DomainError('工作台登录未完成，请刷新重试', 502); }
+        finally { widgetRequests--; }
+        if (config.tenantKey && identity.tenantKey !== config.tenantKey) throw new DomainError('此账号不属于本组织', 403);
+        const employee = state.employees.find(e => e.openId === identity.openId);
+        if (!employee || employee.disabled) throw new DomainError('尚未加入考勤或账号已停用，请联系组织管理员', 403);
+        const today = clockParts(new Date(Date.now())).date;
+        const day = dailyAttendance(state, employee.id, today, Date.now());
+        return json(200, { date: today, total: day.total, completed: day.completed,
+          remaining: day.remaining.map(({ time, kind, locationName, expired }) => ({ time, kind, locationName, expired })) });
+      }
       if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== origin) throw new DomainError('请求来源校验失败，请从应用页面重试', 403);
 
       const loginIdentity = identity => {
@@ -540,6 +573,6 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   try {
     const { server, config } = createAttendanceServer();
     server.on('error', error => { console.error(`服务启动失败：${error.code}，请检查端口占用与监听权限`); process.exitCode = 1; });
-    server.listen(config.port, config.host, () => console.log(`自定义考勤 · ${config.mode === 'demo' ? '本地演示' : '飞书模式'} · ${config.baseUrl || `http://${config.host}:${server.address().port}`}`));
+    server.listen(config.port, config.host, () => console.log(`灵活考勤 · ${config.mode === 'demo' ? '本地演示' : '飞书模式'} · ${config.baseUrl || `http://${config.host}:${server.address().port}`}`));
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

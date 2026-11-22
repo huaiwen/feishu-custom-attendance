@@ -1,0 +1,18 @@
+.attendance { display: flex; flex-direction: column; height: 150px; padding: 12px; box-sizing: border-box; background-color: #ffffff; color: #1f2329; }
+.heading { display: flex; flex-direction: row; align-items: center; justify-content: space-between; height: 18px; }
+.title { font-size: 14px; font-weight: 600; }
+.refresh { padding: 4px 8px; color: #245bdb; font-size: 12px; }
+.content { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.progress { display: flex; flex-direction: row; align-items: center; height: 50px; }
+.count { display: flex; flex-direction: row; align-items: baseline; width: 108px; flex-shrink: 0; }
+.number { font-size: 30px; font-weight: 600; color: #245bdb; }
+.count-label { font-size: 12px; margin-left: 6px; color: #646a73; }
+.next { display: flex; flex-direction: column; flex: 1; min-width: 0; }
+.completed { font-size: 11px; color: #646a73; margin-bottom: 4px; }
+.next-place { font-size: 13px; font-weight: 500; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.places { font-size: 12px; color: #646a73; height: 24px; line-height: 20px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.action { display: flex; flex-direction: row; align-items: center; justify-content: center; height: 32px; min-height: 32px; border-radius: 6px; background-color: #245bdb; color: #ffffff; font-size: 14px; }
+.secondary { background-color: #f0f4ff; color: #245bdb; }
+.state { display: flex; flex-direction: column; justify-content: space-around; flex: 1; }
+.error { font-size: 13px; color: #646a73; line-height: 20px; }
+.muted { font-size: 13px; color: #646a73; }

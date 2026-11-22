@@ -1,6 +1,6 @@
 # 原生审批、日历与考勤台账
 
-本应用按[飞书官方人员与考勤管理示例](https://open.feishu.cn/document/quick-start-of-personnel-and-attendance-management-system/overview)接入服务端 API。审批仍由飞书原生流程负责；自定义考勤监听结果、发送交互卡片并同步日历和台账。
+本应用按[飞书官方人员与考勤管理示例](https://open.feishu.cn/document/quick-start-of-personnel-and-attendance-management-system/overview)接入服务端 API。审批仍由飞书原生流程负责；灵活考勤监听结果、发送交互卡片并同步日历和台账。
 
 ## 使用流程
 

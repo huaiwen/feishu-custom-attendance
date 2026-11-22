@@ -66,7 +66,7 @@ function renderShell() {
   const employee = employeeById(ui.db.session?.employeeId);
   document.querySelector('.sidebar-user .avatar').textContent = employee?.name.slice(-1) || '管';
   document.querySelector('#user-label').innerHTML = `${esc(employee?.name || '组织管理员')}<small>${roleLabels[ui.db.session.role]}</small>`;
-  document.title = `${views[ui.view][0]} · 自定义考勤`;
+  document.title = `${views[ui.view][0]} · 灵活考勤`;
 }
 function pageHeader(title, subtitle, action = '') {return `<div class="page-header"><div><h1>${title}</h1><p>${subtitle}</p></div>${action}</div>`;}
 function render() {
@@ -306,7 +306,7 @@ async function renderIntegration() {
   main.innerHTML=`${pageHeader('飞书接入','统一查看身份、审批、日历和考勤台账的连接状态。')}<p role="status">正在核对连接…</p>`;
   try {
     const data=await api('/api/workflows');if(ui.view!=='integration') return;
-    main.innerHTML=`${pageHeader('飞书接入','统一查看身份、审批、日历和考勤台账的连接状态。')}<section class="panel request-item"><h2>自定义考勤</h2><p>工作台提供免登、排班、手机定位与个人记录；机器人提供打卡提醒和审批结果卡片。</p>
+    main.innerHTML=`${pageHeader('飞书接入','统一查看身份、审批、日历和考勤台账的连接状态。')}<section class="panel request-item"><h2>灵活考勤</h2><p>工作台提供免登、排班、手机定位与个人记录；机器人提供打卡提醒和审批结果卡片。</p>
       <dl class="integration-status"><div><dt>飞书身份与组织选人</dt><dd>${ui.db.mode==='feishu'?'已接通':'本地演示'}</dd></div><div><dt>请假、加班与日历</dt><dd>${data.enabled?'已启用':'等待权限与审批配置'}</dd></div><div><dt>最近组织或审批事件</dt><dd>${data.status.lastEventAt?esc(fullDate(data.status.lastEventAt)):'尚未收到'}</dd></div><div><dt>自动归档</dt><dd>${data.status.archived} 条已同步 · ${data.status.pending} 项待处理</dd></div></dl>
       ${data.status.error?`<p class="form-error" role="alert">${esc(data.status.error)}</p>`:''}
       <div class="overview-actions"><button class="button" data-action="navigate" data-view="requests">查看申请</button>${data.tableUrl?`<a class="button" href="${esc(data.tableUrl)}" target="_blank" rel="noopener noreferrer">打开考勤台账</a>`:''}<a class="text-button" href="/api/records.csv">导出打卡记录</a></div></section>`;
@@ -342,7 +342,7 @@ async function testReminder(button) {
   const editing = ui.drawer;button.disabled = true;
   const target = document.querySelector('#reminder-test-status');
   target.textContent = '正在发送到你的飞书…';
-  try {await api('/api/reminders/test',{});if (ui.drawer === editing) target.textContent = '测试提醒已发送，请在飞书消息中查看“自定义考勤”。';}
+  try {await api('/api/reminders/test',{});if (ui.drawer === editing) target.textContent = '测试提醒已发送，请在飞书消息中查看“灵活考勤”。';}
   catch (error) {if (ui.drawer === editing) target.textContent = error.message;}
   finally {if (ui.drawer === editing) button.disabled = false;}
 }
@@ -690,6 +690,6 @@ async function init() {
       triedNativeLogin=true;main.innerHTML='<div class="loading"><span class="spinner"></span>正在使用飞书身份进入…</div>';
       try {await nativeLogin();location.reload();return;} catch (loginError) {error.message=loginError.message;}
     }
-    main.innerHTML = `<div class="error-page"><h2>${error.status === 401 || error.status === 403 ? '登录自定义考勤' : '暂时无法加载'}</h2><p>${esc(error.message)}</p>${error.status === 401 || error.status === 403 ? `<a class="button primary" href="${esc(loginLink())}">使用飞书身份登录</a>` : '<button class="button primary" data-action="retry">重新加载</button>'}</div>`;}
+    main.innerHTML = `<div class="error-page"><h2>${error.status === 401 || error.status === 403 ? '登录灵活考勤' : '暂时无法加载'}</h2><p>${esc(error.message)}</p>${error.status === 401 || error.status === 403 ? `<a class="button primary" href="${esc(loginLink())}">使用飞书身份登录</a>` : '<button class="button primary" data-action="retry">重新加载</button>'}</div>`;}
 }
 init();

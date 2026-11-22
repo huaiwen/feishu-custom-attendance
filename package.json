@@ -1,9 +1,9 @@
 {
   "name": "custom-attendance",
-  "version": "0.5.0",
+  "version": "0.5.2",
   "private": true,
   "type": "module",
-  "description": "自定义考勤：按人、日期、时段和地点排班",
+  "description": "灵活考勤：按人、日期、时段和地点排班",
   "engines": {
     "node": ">=24"
   },

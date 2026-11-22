@@ -59,6 +59,25 @@ function cachedCredential(value, lifetime, obtainedAt) {
   return { value, expiresAt: obtainedAt + (lifetime - Math.min(60, lifetime / 10)) * 1000 };
 }
 
+export async function exchangeBlockCode({ appId, appSecret, code, fetch = globalThis.fetch }) {
+  checkCredentials(appId, appSecret);
+  required(code, '工作台登录授权码');
+  const key = `block:${appId}:${createHash('sha256').update(appSecret).digest('hex')}`;
+  let token = credentialsCache.get(key);
+  if (!token || token.expiresAt <= Date.now()) {
+    const obtainedAt = Date.now();
+    const data = await request(fetch, `${openApi}/auth/v3/app_access_token/internal`, json({ app_id: appId, app_secret: appSecret }), '获取工作台应用凭证');
+    token = cachedCredential(data.app_access_token, data.expire, obtainedAt);
+    credentialsCache.set(key, token);
+  }
+  const result = await request(fetch, `${openApi}/mina/v2/tokenLoginValidate`, {
+    ...json({ code }), headers: { 'Content-Type': 'application/json; charset=utf-8', Authorization: `Bearer ${token.value}` },
+  }, '工作台登录');
+  if (typeof result.data?.open_id !== 'string' || !/^ou_[a-zA-Z0-9]+$/.test(result.data.open_id) ||
+      typeof result.data?.tenant_key !== 'string' || !result.data.tenant_key) throw new Error('工作台身份响应不完整');
+  return { openId: result.data.open_id, tenantKey: result.data.tenant_key };
+}
+
 export async function getJsapiConfig({ appId, appSecret, url, fetch = globalThis.fetch }) {
   checkCredentials(appId, appSecret);
   required(url, '网页地址');

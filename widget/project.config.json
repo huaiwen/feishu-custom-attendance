@@ -1,0 +1,6 @@
+{
+  "appid": "cli_replace_before_upload",
+  "projectname": "灵活考勤",
+  "blocks": ["block/index"],
+  "setting": {"es6": true, "minified": true}
+}

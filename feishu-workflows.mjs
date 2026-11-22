@@ -36,7 +36,7 @@ export function createFeishuWorkflowApi(config, client=feishuClient(config)) {
       const calendarId=primary.calendars?.[0]?.calendar?.calendar_id;
       if (!calendarId) throw new DomainError('应用主日历尚未就绪',502);
       const data=await feishuResult(client.calendar.calendarEvent.create({path:{calendar_id:calendarId},params:{user_id_type:'open_id',idempotency_key:key},data:{
-        summary,description:'来自自定义考勤的已通过审批',start_time:{timestamp:String(Date.parse(range.start)/1000),timezone:'Asia/Shanghai'},end_time:{timestamp:String(Date.parse(range.end)/1000),timezone:'Asia/Shanghai'},
+        summary,description:'来自灵活考勤的已通过审批',start_time:{timestamp:String(Date.parse(range.start)/1000),timezone:'Asia/Shanghai'},end_time:{timestamp:String(Date.parse(range.end)/1000),timezone:'Asia/Shanghai'},
         visibility:'private',attendee_ability:'none',free_busy_status:'busy',need_notification:false,vchat:{vc_type:'no_meeting'},...(locationName?{location:{name:locationName}}:{})}}));
       if (!data.event?.event_id) throw new DomainError('飞书未返回日程编号',502);
       return {calendarId,eventId:data.event.event_id};

@@ -1,0 +1,19 @@
+<view class="attendance">
+  <view class="heading">
+    <text class="title">灵活考勤</text>
+    <view class="refresh" bindtap="refresh"><text>{{loading ? '更新中' : '刷新'}}</text></view>
+  </view>
+  <view class="state" tt:if="{{error}}">
+    <text class="error">{{error}}</text>
+    <view class="action" bindtap="refresh"><text>重新加载</text></view>
+  </view>
+  <view class="state" tt:elif="{{loading}}"><text class="muted">正在读取你的今日安排…</text></view>
+  <view class="content" tt:else>
+    <view class="progress">
+      <view class="count"><text class="number">{{remaining}}</text><text class="count-label">次待打卡</text></view>
+      <view class="next"><text class="completed">已完成 {{completed}} / {{total}} 次</text><text class="next-place">{{next}}</text></view>
+    </view>
+    <text class="places">{{places}}</text>
+    <view class="action {{canPunch ? '' : 'secondary'}}" bindtap="openAttendance"><text>{{canPunch ? '去打卡' : '查看我的记录'}}</text></view>
+  </view>
+</view>

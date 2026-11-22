@@ -1,0 +1,8 @@
+{
+  "blockTypeID": "blk_replace_before_upload",
+  "creator": "block/creator/index",
+  "useStartLoading": false,
+  "darkmode": false,
+  "showFrame": true,
+  "workplace": {"needHeader": false}
+}

@@ -96,11 +96,11 @@ export function mountLocationMap(form, getPosition) {
   const searchKey = event => { if (event.key === 'Enter') { event.preventDefault();searchPlaces(); } };
   search.addEventListener('keydown', searchKey);
   centerButton.onclick = () => { if (map) select(map.getCenter()); };
-  const locate = async () => {
+  const locate = async (fresh = false) => {
     const before = interaction;
     locateButton.disabled = true;status.textContent = '正在通过飞书获取附近位置…';
     try {
-      const position = await getPosition();
+      const position = await getPosition({fresh});
       if (!isOpen() || !map || interaction !== before) return;
       const center = gcoord.transform([position.longitude, position.latitude], crs(position.coordinateSystem), gcoord.GCJ02);
       map.setZoomAndCenter(17, center);
@@ -108,7 +108,7 @@ export function mountLocationMap(form, getPosition) {
     } catch (error) { if (isOpen() && interaction === before) status.textContent = `${error.message}。也可以直接搜索地点。`; }
     finally { if (active) locateButton.disabled = false; }
   };
-  locateButton.onclick = locate;
+  locateButton.onclick = () => locate(true);
   const change = event => {
     if (event.target.name === 'radius') {
       update();

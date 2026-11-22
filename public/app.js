@@ -306,7 +306,7 @@ function openDrawer(type, item = null, employeeId = '', date = ui.db.today) {
   drawer.showModal();drawer.scrollTop = 0;
   if (type === 'location') {
     const editing = ui.drawer;
-    import('/location-map.mjs').then(module => {if (drawer.open && ui.drawer === editing) editing.cleanup = module.mountLocationMap(document.querySelector('#drawer-form'),getPosition);}).catch(() => {if (ui.drawer === editing) document.querySelector('#map-status').textContent = '高德地图加载失败，请关闭面板后重试。';});
+    import('/location-map.mjs').then(module => {if (drawer.open && ui.drawer === editing) editing.cleanup = module.mountLocationMap(document.querySelector('#drawer-form'),getMapPosition);}).catch(() => {if (ui.drawer === editing) document.querySelector('#map-status').textContent = '高德地图加载失败，请关闭面板后重试。';});
   }
 }
 function closeDrawer() {ui.drawer?.cleanup?.();drawer.close();ui.drawer = null;}
@@ -420,6 +420,23 @@ async function getPosition() {
     navigator.geolocation.getCurrentPosition(position => resolve({latitude:position.coords.latitude,longitude:position.coords.longitude,accuracy:position.coords.accuracy,timestamp:position.timestamp,coordinateSystem:'wgs84'}),error => reject(new Error(({1:'定位权限未开启，请允许访问位置后重试',2:'暂时无法获取位置，请移至开阔处后重试',3:'获取定位超时，请开启高精度定位后重试'})[error.code] || '获取位置失败')),{enableHighAccuracy:true,maximumAge:0,timeout:20000});
   });
 }
+let nearbyPosition, nearbyRequest;
+function getMapPosition({fresh = false} = {}) {
+  if (!fresh && nearbyPosition && Date.now() - nearbyPosition.receivedAt < 60_000) return Promise.resolve(nearbyPosition.position);
+  if (!nearbyRequest) {
+    nearbyPosition = null;
+    nearbyRequest = getPosition().then(position => {
+      nearbyPosition = {position, receivedAt:Date.now()};return position;
+    }).finally(() => {nearbyRequest = null;});
+  }
+  return nearbyRequest;
+}
+function warmLocation() {
+  if (ui.db.mode === 'feishu' && /Lark|Feishu/i.test(navigator.userAgent) && /iPhone|iPad|Android|Mobile/i.test(navigator.userAgent)) {
+    // Keep this short-lived map hint in memory; punches always request a fresh position.
+    getMapPosition().catch(() => {});
+  }
+}
 async function checkin(button) {
   const schedule = currentSchedule();if (!schedule || ui.busy) return;
   ui.busy = true;const oldText = button.innerHTML;button.disabled = true;button.innerHTML = '<span class="spinner"></span>正在获取位置…';
@@ -517,7 +534,7 @@ function loginLink() {
   return `/auth/login?${params}`;
 }
 async function init() {
-  try {await refresh();reminderLinkFilters();const requested = location.hash.slice(1);ui.view = requested || (isAdmin() ? 'overview' : 'checkin');if (isAdmin() && ['schedules','checkin',''].includes(requested) && !ui.db.schedules.some(s => s.date >= ui.db.today)) ui.view = 'overview';render();}
+  try {await refresh();warmLocation();reminderLinkFilters();const requested = location.hash.slice(1);ui.view = requested || (isAdmin() ? 'overview' : 'checkin');if (isAdmin() && ['schedules','checkin',''].includes(requested) && !ui.db.schedules.some(s => s.date >= ui.db.today)) ui.view = 'overview';render();}
   catch (error) {main.innerHTML = `<div class="error-page"><h2>${error.status === 401 || error.status === 403 ? '登录自定义考勤' : '暂时无法加载'}</h2><p>${esc(error.message)}</p>${error.status === 401 || error.status === 403 ? `<a class="button primary" href="${esc(loginLink())}">使用飞书身份登录</a>` : '<button class="button primary" data-action="retry">重新加载</button>'}</div>`;}
 }
 init();

@@ -2,6 +2,8 @@
 
 使用飞书原生 Block（TTML / TTSS / JavaScript），高度 150px，可添加到工作台「我的常用」，或由管理员放入定制工作台。显示本人今日剩余次数、已完成进度、下一次时间与地点、待打地点概览。长地点省略显示，完整安排从「去打卡」进入现有应用查看。已完成或无排班时进入本人记录。
 
+跨端布局须显式约束容器宽度、文字行高和弹性基准：移动端 Native 的 `flex` 仅等同于 `flex-grow`，且文字样式不会从父容器继承。按钮文字直接设置字号和颜色，剩余空间用 `flex-basis: 0px` 分配，避免手机端长地点撑宽或文字挤出按钮。不能仅凭桌面预览认定 iPhone 排版已验收。参见官方 [TTSS 说明](https://open.feishu.cn/document/client-docs/block/block-frame/code-components-and-structure/view-layer/ttss/ttss)与 [flex 说明](https://open.feishu.cn/document/client-docs/block/block-frame/code-components-and-structure/view-layer/ttss/attributes/flexbox/flex)。
+
 打开、返回工作台或点击刷新时，通过 `tt.login` 获取一次性授权码，再调用本服务器 `POST /api/widget/today`。服务器用本自建应用的 app_access_token 验证代码，并核对本人绑定和停用状态；配置租户限制时也校验租户。管理员也只返回本人当天数据。不接受员工 ID，不返回组织成员、原始坐标、登录凭证或管理数据；不建立网页登录会话。
 
 组件点击通过 `tt.openSchema` 的网页应用 AppLink 进入现有免登录、飞书定位打卡流程；查看工作台不会申请定位或自动打卡。失败显示重试入口，更新期间不把旧数量伪装成最新值。剩余次数和机器人提醒共用同一统计函数；上班、下班各算一次，过时未打仍属于未完成。

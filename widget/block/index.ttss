@@ -1,6 +1,15 @@
 /* The native title owns the header; the tested 150px iPhone frame leaves a 106px body. */
 .attendance { display: flex; flex-direction: column; width: 100%; padding: 8px 12px; box-sizing: border-box; background-color: #ffffff; }
 .content { display: flex; flex-direction: column; width: 100%; height: 86px; flex-shrink: 0; }
+.expanded { height: 204px; }
+.schedule { display: flex; flex-direction: column; width: 100%; margin-top: 8px; flex-shrink: 0; }
+.schedule-heading { height: 22px; font-size: 14px; line-height: 22px; font-weight: 500; color: #1f2329; }
+.schedule-row { display: flex; flex-direction: row; align-items: center; width: 100%; height: 30px; flex-shrink: 0; }
+.schedule-label { width: 0px; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; height: 22px; font-size: 14px; line-height: 22px; color: #1f2329; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; }
+.schedule-status { margin-left: 8px; height: 22px; font-size: 12px; line-height: 22px; color: #646a73; flex-shrink: 0; }
+.schedule-empty { height: 60px; font-size: 14px; line-height: 30px; color: #646a73; }
+.records-link { display: flex; align-items: center; height: 28px; flex-shrink: 0; }
+.records-label { height: 22px; font-size: 14px; line-height: 22px; color: #1456f0; }
 .progress { display: flex; flex-direction: row; align-items: center; width: 100%; height: 40px; flex-shrink: 0; }
 .count { display: flex; flex-direction: row; align-items: center; width: 0px; height: 40px; flex-grow: 1; flex-shrink: 1; flex-basis: 0px; min-width: 0; }
 .number { height: 40px; flex-shrink: 0; font-size: 26px; line-height: 40px; font-weight: 600; color: #1456f0; }

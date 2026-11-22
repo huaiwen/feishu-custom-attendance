@@ -1,10 +1,10 @@
 <view class="attendance">
   <view class="state" tt:if="{{error}}">
-    <text class="error">{{error}}</text>
+    <text class="error">{{error}} {{errorDetail}}</text>
     <view class="action retry" bindtap="refresh"><text class="action-label">重新加载</text></view>
   </view>
   <view class="state" tt:elif="{{loading}}"><text class="muted">正在读取你的今日安排…</text></view>
-  <view class="content" tt:else>
+  <view class="content {{expanded ? 'expanded' : ''}}" tt:else>
     <view class="progress">
       <view class="count">
         <text class="number">{{remaining}}</text>
@@ -14,5 +14,13 @@
     </view>
     <text class="next-place">{{next}}</text>
     <text class="places">{{places}}</text>
+    <view class="schedule" tt:if="{{expanded}}">
+      <text class="schedule-heading">今日安排 · {{date}}</text>
+      <view class="schedule-row" tt:for="{{punches}}" tt:key="index">
+        <text class="schedule-label">{{item.label}}</text><text class="schedule-status">{{item.status}}</text>
+      </view>
+      <text class="schedule-empty" tt:if="{{!total}}">今天无需打卡，请留意后续排班。</text>
+      <view class="records-link" bindtap="openRecords"><text class="records-label">查看全部 {{total}} 次安排与记录 ›</text></view>
+    </view>
   </view>
 </view>

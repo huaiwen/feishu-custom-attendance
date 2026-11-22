@@ -200,6 +200,7 @@ export function createAttendanceServer({ env = process.env, dataFile } = {}) {
         const today = clockParts(new Date(Date.now())).date;
         const day = dailyAttendance(state, employee.id, today, Date.now());
         return json(200, { date: today, total: day.total, completed: day.completed,
+          punches: day.punches.map(({ time, kind, locationName, expired, done }) => ({ time, kind, locationName, expired, done })),
           remaining: day.remaining.map(({ time, kind, locationName, expired }) => ({ time, kind, locationName, expired })) });
       }
       if (!['GET', 'HEAD'].includes(req.method) && req.headers.origin !== origin) throw new DomainError('请求来源校验失败，请从应用页面重试', 403);

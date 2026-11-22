@@ -1,5 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {readFile} from 'node:fs/promises';
+import {createContext,runInContext} from 'node:vm';
 import {createWorkflows,initializeWorkflows,workflowConfiguration,approvalRanges,approvalLink,workflowView} from '../workflows.mjs';
 import {createFeishuWorkflowApi,feishuResult} from '../feishu-workflows.mjs';
 import {sessionFor,visibleState} from '../access.mjs';
@@ -165,4 +167,74 @@ test('Retrying deletion and approval subscription accepts only documented alread
     const subscriptions=createFeishuWorkflowApi({workflows:workflowConfiguration(env)},{approval:{approval:{subscribe:async()=>{if(rejected)throw {response:{data:{code:1390007}}};return {code:1390007};}}}});
     await subscriptions.subscribe('leave-code');
   }
+});
+
+test('Simulated overtime walks the real employee screen from pending approval through location, calendar and withdrawal',async t=>{
+  t.mock.method(globalThis,'fetch',()=>{throw new Error('Simulation must not contact a real service');});
+  const f=fixture();f.native.approval_code='work-code';f.native.status='PENDING';
+  f.native.form=JSON.stringify([{type:'dateInterval',value:range},{type:'textarea',value:'PRIVATE-SIMULATED-REASON'},{type:'attachmentV2',value:['PRIVATE-SIMULATED-ATTACHMENT']}]);
+  const session=sessionFor(f.state,'ou_self',[]),main={innerHTML:''},toasts=[];
+  let denyLocation=false,locationCalls=0;
+  const context=createContext({ui:{view:'requests',db:{session},busy:false},main,URLSearchParams,
+    location:{search:'?request=instance1'},navigator:{userAgent:'iPhone'},document:{getElementById:()=>({value:'site'})},
+    esc:String,isAdmin:()=>false,pageHeader:title=>`<h1>${title}</h1>`,toast:(message,error)=>toasts.push({message,error}),
+    getPosition:async()=>{locationCalls++;if(denyLocation)throw new Error('请允许飞书定位');const p=f.position();return {...p,timestamp:Date.parse(p.locatedAt)};},
+    api:async(path,input)=>{
+      if(path==='/api/workflows')return f.service.view(session);
+      assert.equal(path,'/api/workflows/instance1/calendar');
+      return f.service.requestCalendar('instance1','ou_self',input);
+    },
+  });
+  const source=await readFile(new URL('../public/app.js',import.meta.url),'utf8');
+  runInContext(source.slice(source.indexOf('const requestStatusLabels ='),source.indexOf('async function renderDepartments()')),context);
+  const button=()=>({dataset:{id:'instance1',index:'0'},textContent:'定位核验并加入日历',disabled:false});
+  f.event('PENDING','pending');await f.service.run();await f.service.run();await context.renderRequests();
+  assert.match(main.innerHTML,/审批中/);assert.doesNotMatch(main.innerHTML,/data-action="workflow-calendar"/);
+  await assert.rejects(f.service.requestCalendar('instance1','ou_self',f.position()),/审批通过/);
+  assert.equal(f.calls.creates.length,0);
+
+  f.native.status='APPROVED';f.event('APPROVED','approved');await f.service.run();await f.service.run();await context.renderRequests();
+  assert.match(main.innerHTML,/定位核验并加入日历/);
+  const card=f.calls.messages.at(-1).card;
+  assert.equal(card.schema,'2.0');assert.match(JSON.stringify(card),/核验加班地点/);
+  assert.match(JSON.stringify(card),/request=instance1#requests/);
+  assert.equal(f.calls.creates.length,0,'approval itself cannot replace the location check');
+  denyLocation=true;const denied=button();await context.workflowCalendar(denied);
+  assert.equal(toasts.at(-1).error,true);assert.equal(denied.disabled,false);
+  assert.equal(f.state.workflows.requests[0].verifications.length,0);
+  denyLocation=false;await context.workflowCalendar(button());
+  assert.equal(locationCalls,2);assert.equal(f.calls.creates.length,0,'the screen queues calendar work');
+  f.restart();await f.service.run();await context.renderRequests();
+  assert.match(main.innerHTML,/已在办公室核验/);assert.match(main.innerHTML,/日历已同步/);
+  assert.equal(f.calls.creates.length,1);assert.equal(f.calls.invites.length,1);
+  assert.equal(f.calls.invites[0][1],'ou_self');assert.equal(f.calls.archives.at(-1).fields['日历'],'已同步');
+  await context.workflowCalendar(button());f.event('APPROVED','approved');f.restart();await f.service.run();
+  assert.equal(f.calls.creates.length,1,'repeat taps and event delivery reuse the same calendar');
+  assert.equal(f.calls.invites.length,1);
+  assert.doesNotMatch(JSON.stringify({workflow:f.state.workflows,calls:f.calls}),/PRIVATE-SIMULATED|"latitude"|"longitude"/);
+
+  f.native.status='CANCELED';f.event('CANCELED','withdrawn');f.event('CANCELED','withdrawn');
+  await f.service.run();await f.service.run();await context.renderRequests();
+  assert.match(main.innerHTML,/已撤回/);assert.doesNotMatch(main.innerHTML,/data-action="workflow-calendar"/);
+  assert.equal(f.calls.deletes.length,1);assert.equal(f.state.workflows.requests[0].calendars.length,0);
+  assert.equal(f.calls.archives.at(-1).fields['状态'],'已撤回');
+  assert.equal(f.state.records.length,0,'simulated overtime must never create a punch record');
+});
+
+test('Simulated multi-interval overtime verifies each interval and rejects a late approval after rejection',async()=>{
+  const f=fixture();f.native.approval_code='work-code';
+  f.native.form=JSON.stringify([{type:'dateInterval',value:range},{type:'dateInterval',value:{start:'2026-11-22T14:00:00+08:00',end:'2026-11-22T16:00:00+08:00'}}]);
+  f.event();await f.service.run();
+  await f.service.requestCalendar('instance1','ou_self',f.position());await f.service.run();
+  assert.equal(f.calls.creates.length,1);
+  assert.equal(f.service.view(sessionFor(f.state,'ou_self',[])).requests[0].calendarStatus,'pending');
+  await assert.rejects(f.service.requestCalendar('instance1','ou_self',{...f.position(),rangeIndex:1}),/获批/);
+  f.advance(4*3600000);
+  await f.service.requestCalendar('instance1','ou_self',{...f.position(),rangeIndex:1});await f.service.run();
+  assert.equal(f.calls.creates.length,2);assert.equal(f.calls.invites.length,2);
+  assert.equal(f.service.view(sessionFor(f.state,'ou_self',[])).requests[0].calendarStatus,'synced');
+  f.native.status='REJECTED';f.event('APPROVED','late-approval');await f.service.run();
+  assert.equal(f.state.workflows.requests[0].status,'REJECTED');assert.equal(f.calls.deletes.length,2);
+  await assert.rejects(f.service.requestCalendar('instance1','ou_self',{...f.position(),rangeIndex:1}),/审批通过/);
+  assert.equal(f.calls.creates.length,2);
 });

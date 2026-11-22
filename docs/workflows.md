@@ -69,4 +69,12 @@ FEISHU_BITABLE_TABLE_ID=REPLACE_TABLE_ID
 
 服务仍为单进程 JSON 存储。长期断开事件连接可能错过新的审批实例，应核对原生审批记录；上线验收需检查后台连接、待处理数量及最后事件时间。
 
+## 隔离模拟验收
+
+运行 `node --test tests/workflows.test.mjs`，无需配置真实应用或加载 `.env`。测试使用合成员工、审批实例、时钟和位置，消息、日历及台账接口均由内存模拟，不向飞书发送请求。
+
+其中加班流程直接执行员工页面的申请渲染及定位按钮逻辑，串联审批中、通过、拒绝定位、现场核验、重启后日历同步、重复操作和撤回取消；多段加班分别核验，并检查迟到的通过事件不能覆盖最新拒绝状态。其他用例覆盖请假卡片、越权拦截、围栏和精度、日历邀请失败重试、台账去重与隐私字段。
+
+这些检查验证应用逻辑，不代表真实教师完成了审批，也不能替代飞书事件送达、真实审批表单解析和 iPhone 日历接收的联调验收。
+
 官方依据：[订阅审批](https://open.feishu.cn/document/uAjLw4CM/ukTMukTMukTM/reference/approval-v4/approval/subscribe)、[审批实例详情](https://open.feishu.cn/document/server-docs/approval-v4/instance/get)、[创建日程](https://open.feishu.cn/document/server-docs/calendar-v4/calendar-event/create)、[删除日程](https://open.feishu.cn/document/server-docs/calendar-v4/calendar-event/delete)、[官方 Node SDK](https://github.com/larksuite/node-sdk)。
